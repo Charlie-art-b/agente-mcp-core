@@ -1,0 +1,30 @@
+# --- Core ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-dotenv==1.0.1
+
+# --- Anthropic / MCP ---
+anthropic==0.34.2
+mcp==1.1.2
+
+# --- Base de datos ---
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+alembic==1.13.3
+
+# --- RAG / Embeddings ---
+# chromadb trae su propio modelo de embeddings liviano (ONNX) por defecto,
+# no se necesita instalar sentence-transformers/PyTorch para arrancar.
+chromadb==1.5.9
+
+# --- Utilidades ---
+httpx==0.27.2
+tenacity==9.0.0
+
+# --- Testing / Evaluación ---
+pytest==8.3.3
+pytest-asyncio==0.24.0
+
+# --- Demo UI (opcional) ---
+streamlit==1.39.0

@@ -1,0 +1,35 @@
+# Entorno virtual (dependencias de Python)
+.venv/
+venv/
+env/
+
+# Variables de entorno (nunca subir tu API key)
+.env
+
+# Cache de Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Cache de pytest
+.pytest_cache/
+
+# Datos locales del vector store (se regeneran con `python -m app.rag.ingest`)
+data/chroma_local/
+chroma_test_*/
+
+# Bases de datos locales sueltas
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# Sistema operativo / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Reportes de evaluación (se regeneran, no se versionan)
+app/eval/reports/

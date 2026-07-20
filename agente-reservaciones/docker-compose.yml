@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: agente_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agente
+      POSTGRES_PASSWORD: agente_dev_password
+      POSTGRES_DB: agente_reservaciones
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./app/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: agente_chroma
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agente_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - chroma
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+
+volumes:
+  postgres_data:
+  chroma_data:
