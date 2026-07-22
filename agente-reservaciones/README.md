@@ -104,7 +104,7 @@ reemplazalo por tu propia base de conocimiento cuando quieras.
 - [x] Fase 0 — Fundaciones (estructura, Docker, stack definido)
 - [x] Fase 1 — Base de conocimiento (RAG): chunking, vector store (Chroma),
       búsqueda semántica, tests end-to-end
-- [ ] Fase 2 — Datos de negocio (Postgres)
+- [x] Fase 2 — Datos de negocio (Postgres)
 - [ ] Fase 3 — Servidor MCP
 - [ ] Fase 4 — Agente
 - [ ] Fase 5 — Evaluación
