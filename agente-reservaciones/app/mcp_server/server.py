@@ -35,6 +35,7 @@ from app.tools.buscar_conocimiento import buscar_conocimiento as _buscar_conocim
 from app.tools.consultar_disponibilidad import (
     consultar_disponibilidad as _consultar_disponibilidad,
 )
+from app.tools.crear_reservacion import crear_reservacion as _crear_reservacion
 
 from mcp.server.fastmcp import FastMCP
 
@@ -82,6 +83,42 @@ def consultar_disponibilidad(fecha: str, servicio: str | None = None) -> dict:
         que es el dato necesario para crear después la reservación.
     """
     return _consultar_disponibilidad(fecha=fecha, servicio=servicio)
+
+
+@mcp.tool()
+def crear_reservacion(
+    horario_id: int,
+    nombre_cliente: str,
+    telefono: str | None = None,
+    email: str | None = None,
+) -> dict:
+    """
+    Agenda una reservación para un horario disponible.
+
+    Úsala cuando el usuario confirme que quiere reservar. Antes necesitás
+    el `horario_id`, que te da `consultar_disponibilidad`: nunca lo
+    inventes ni des por hecho que un horario sigue libre, porque esta tool
+    lo verifica en el momento y avisa si ya se ocupó.
+
+    Args:
+        horario_id: id del horario a reservar, tal como lo devolvió
+            `consultar_disponibilidad`.
+        nombre_cliente: nombre de la persona que reserva.
+        telefono: teléfono del cliente. Si ya reservó antes con ese mismo
+            número, se reutiliza su ficha en vez de duplicarla.
+        email: correo del cliente (opcional).
+
+    Returns:
+        Los datos de la reservación creada. Si el horario ya fue tomado por
+        otra persona, devuelve el error junto con los otros horarios libres
+        de ese servicio y día, para poder ofrecer alternativas.
+    """
+    return _crear_reservacion(
+        horario_id=horario_id,
+        nombre_cliente=nombre_cliente,
+        telefono=telefono,
+        email=email,
+    )
 
 
 if __name__ == "__main__":

@@ -72,11 +72,11 @@ def base_de_prueba(monkeypatch):
     s.commit()
     s.close()
 
-    # La tool llama a obtener_sesion() desde su propio módulo, así que se
-    # reemplaza ahí y no en app.db.session.
-    monkeypatch.setattr(
-        "app.tools.consultar_disponibilidad.obtener_sesion", lambda: fabrica()
-    )
+    # Cada tool llama a obtener_sesion() desde su propio módulo, así que se
+    # reemplaza en cada uno y no en app.db.session.
+    for modulo in ("consultar_disponibilidad", "crear_reservacion"):
+        monkeypatch.setattr(f"app.tools.{modulo}.obtener_sesion", lambda: fabrica())
+
     return ruta
 
 
@@ -91,6 +91,19 @@ async def test_el_servidor_expone_las_tools_esperadas():
     nombres = {t.name for t in resultado.tools}
     assert "buscar_conocimiento" in nombres
     assert "consultar_disponibilidad" in nombres
+    assert "crear_reservacion" in nombres
+
+
+@pytest.mark.asyncio
+async def test_crear_reservacion_declara_bien_lo_obligatorio_y_lo_opcional():
+    """El teléfono y el email son opcionales; el horario y el nombre no."""
+    async with cliente_mcp() as cliente:
+        resultado = await cliente.list_tools()
+
+    tool = next(t for t in resultado.tools if t.name == "crear_reservacion")
+
+    assert set(tool.inputSchema["required"]) == {"horario_id", "nombre_cliente"}
+    assert tool.inputSchema["properties"]["horario_id"]["type"] == "integer"
 
 
 @pytest.mark.asyncio
@@ -167,6 +180,70 @@ async def test_la_respuesta_es_serializable_a_json(base_de_prueba):
 
     datos = json.loads(resultado.content[0].text)
     assert datos["disponibles"][0]["precio"] == 8000.0
+
+
+@pytest.mark.asyncio
+async def test_encadenar_consultar_y_reservar_por_mcp(base_de_prueba):
+    """
+    El flujo real del agente: consulta disponibilidad, toma el horario_id
+    de la respuesta, reserva con él, y el horario deja de ofrecerse. Todo
+    a través del protocolo, sin tocar las funciones directamente.
+    """
+    async with cliente_mcp() as cliente:
+        antes = json.loads(
+            (
+                await cliente.call_tool(
+                    "consultar_disponibilidad", {"fecha": FECHA_STR}
+                )
+            ).content[0].text
+        )
+        horario_id = antes["disponibles"][0]["horario_id"]
+
+        reserva = json.loads(
+            (
+                await cliente.call_tool(
+                    "crear_reservacion",
+                    {
+                        "horario_id": horario_id,
+                        "nombre_cliente": "Ana Pérez",
+                        "telefono": "8888-0001",
+                    },
+                )
+            ).content[0].text
+        )
+
+        despues = json.loads(
+            (
+                await cliente.call_tool(
+                    "consultar_disponibilidad", {"fecha": FECHA_STR}
+                )
+            ).content[0].text
+        )
+
+    assert reserva["creada"] is True
+    assert reserva["hora_inicio"] == "09:00"
+    assert despues["total"] == antes["total"] - 1
+
+
+@pytest.mark.asyncio
+async def test_reservar_dos_veces_el_mismo_horario_rebota_por_mcp(base_de_prueba):
+    async with cliente_mcp() as cliente:
+        datos = {
+            "horario_id": 1,
+            "nombre_cliente": "Ana",
+            "telefono": "8888-0001",
+        }
+        await cliente.call_tool("crear_reservacion", datos)
+        segunda = json.loads(
+            (
+                await cliente.call_tool(
+                    "crear_reservacion", {**datos, "nombre_cliente": "Luis"}
+                )
+            ).content[0].text
+        )
+
+    assert segunda["creada"] is False
+    assert "ya fue reservado" in segunda["error"]
 
 
 @pytest.mark.asyncio
