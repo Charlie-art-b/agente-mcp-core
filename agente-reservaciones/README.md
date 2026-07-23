@@ -28,7 +28,7 @@ con métricas reales, no solo "funciona en la demo".
 | Capa | Tecnología |
 |---|---|
 | Lenguaje | Python 3.12 |
-| LLM | Claude API (Anthropic) |
+| LLM | Gemini API (Google) |
 | Protocolo de tools | MCP (Model Context Protocol), SDK oficial |
 | Backend | FastAPI |
 | Base de datos | PostgreSQL |
@@ -42,7 +42,7 @@ con métricas reales, no solo "funciona en la demo".
 ```
 Usuario (web hoy / WhatsApp mañana)
         │
-   Cliente del agente (Claude API)
+   Cliente del agente (Gemini API)
         │
    Servidor MCP  ──►  buscar_conocimiento   (RAG sobre Chroma)
         │        ──►  consultar_disponibilidad (Postgres)
@@ -86,9 +86,17 @@ Creá un `.env` en la raíz del proyecto con al menos esto:
 
 ```
 DATABASE_URL=postgresql://agente:agente_dev_password@localhost:5432/agente_reservaciones
-ANTHROPIC_API_KEY=       # hace falta desde la Fase 4
-CLAUDE_MODEL=claude-haiku-4-5
+GEMINI_API_KEY=          # hace falta desde la Fase 4
+GEMINI_MODEL=gemini-3.6-flash
 ```
+
+La API key de Gemini se saca en <https://aistudio.google.com/apikey> —
+no pide tarjeta de crédito y los modelos Flash tienen capa gratuita.
+
+> En la capa gratuita, Google puede usar el contenido enviado para
+> mejorar sus modelos. Para desarrollo con datos de ejemplo no importa,
+> pero antes de procesar datos de clientes reales hay que pasar a una
+> capa donde eso no aplique.
 
 > El host es `localhost` porque el compose publica el puerto 5432 del
 > contenedor en tu máquina. Si algún día corrés el código *dentro* de
