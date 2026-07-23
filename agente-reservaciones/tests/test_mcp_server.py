@@ -74,7 +74,7 @@ def base_de_prueba(monkeypatch):
 
     # Cada tool llama a obtener_sesion() desde su propio módulo, así que se
     # reemplaza en cada uno y no en app.db.session.
-    for modulo in ("consultar_disponibilidad", "crear_reservacion"):
+    for modulo in ("consultar_disponibilidad", "crear_reservacion", "escalar_caso"):
         monkeypatch.setattr(f"app.tools.{modulo}.obtener_sesion", lambda: fabrica())
 
     return ruta
@@ -89,9 +89,12 @@ async def test_el_servidor_expone_las_tools_esperadas():
         resultado = await cliente.list_tools()
 
     nombres = {t.name for t in resultado.tools}
-    assert "buscar_conocimiento" in nombres
-    assert "consultar_disponibilidad" in nombres
-    assert "crear_reservacion" in nombres
+    assert nombres == {
+        "buscar_conocimiento",
+        "consultar_disponibilidad",
+        "crear_reservacion",
+        "escalar_caso",
+    }
 
 
 @pytest.mark.asyncio
@@ -244,6 +247,38 @@ async def test_reservar_dos_veces_el_mismo_horario_rebota_por_mcp(base_de_prueba
 
     assert segunda["creada"] is False
     assert "ya fue reservado" in segunda["error"]
+
+
+@pytest.mark.asyncio
+async def test_escalar_caso_por_mcp_devuelve_numero_de_ticket(base_de_prueba):
+    async with cliente_mcp() as cliente:
+        resultado = await cliente.call_tool(
+            "escalar_caso",
+            {
+                "motivo": "Le cobraron dos veces y quiere el reintegro",
+                "nombre_cliente": "Ana Pérez",
+                "telefono": "8888-0001",
+            },
+        )
+
+    assert not resultado.isError
+    datos = json.loads(resultado.content[0].text)
+    assert datos["escalado"] is True
+    assert datos["estado"] == "abierto"
+    assert isinstance(datos["ticket_id"], int)
+
+
+@pytest.mark.asyncio
+async def test_escalar_caso_sin_motivo_rebota_por_mcp(base_de_prueba):
+    """La tool la invoca un modelo: puede llegar con el motivo vacío."""
+    async with cliente_mcp() as cliente:
+        resultado = await cliente.call_tool(
+            "escalar_caso", {"motivo": "   ", "nombre_cliente": "Ana"}
+        )
+
+    assert not resultado.isError
+    datos = json.loads(resultado.content[0].text)
+    assert datos["escalado"] is False
 
 
 @pytest.mark.asyncio

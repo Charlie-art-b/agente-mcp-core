@@ -36,6 +36,7 @@ from app.tools.consultar_disponibilidad import (
     consultar_disponibilidad as _consultar_disponibilidad,
 )
 from app.tools.crear_reservacion import crear_reservacion as _crear_reservacion
+from app.tools.escalar_caso import escalar_caso as _escalar_caso
 
 from mcp.server.fastmcp import FastMCP
 
@@ -115,6 +116,50 @@ def crear_reservacion(
     """
     return _crear_reservacion(
         horario_id=horario_id,
+        nombre_cliente=nombre_cliente,
+        telefono=telefono,
+        email=email,
+    )
+
+
+@mcp.tool()
+def escalar_caso(
+    motivo: str,
+    nombre_cliente: str,
+    telefono: str | None = None,
+    email: str | None = None,
+) -> dict:
+    """
+    Registra un caso para que lo atienda una persona del negocio.
+
+    Úsala cuando no puedas resolver lo que el usuario necesita con las
+    otras tools: un reclamo o queja, un pedido de excepción a las
+    políticas (cancelar sin costo fuera de plazo, un descuento), algo que
+    la base de conocimiento no cubre, o cuando el usuario pida
+    explícitamente hablar con una persona.
+
+    No la uses para preguntas que `buscar_conocimiento` puede responder,
+    ni para reservar (eso es `crear_reservacion`). Escalar
+    innecesariamente le genera trabajo al negocio y demora al usuario.
+
+    Al usarla, avisale al usuario que su caso quedó registrado y que
+    alguien lo va a contactar.
+
+    Args:
+        motivo: qué necesita el usuario y por qué no se pudo resolver, con
+            el detalle suficiente para que quien lo lea después entienda
+            el caso sin ver la conversación.
+        nombre_cliente: nombre de la persona.
+        telefono: teléfono de contacto. Sin esto el negocio no tiene cómo
+            responderle, así que pedilo si no lo tenés.
+        email: correo de contacto (opcional).
+
+    Returns:
+        El número de ticket y su estado, para dárselo al usuario como
+        referencia.
+    """
+    return _escalar_caso(
+        motivo=motivo,
         nombre_cliente=nombre_cliente,
         telefono=telefono,
         email=email,

@@ -71,11 +71,62 @@ tests/            # Tests automatizados (corren en CI)
 ## Cómo correr el proyecto
 
 ```bash
-cp .env.example .env
-# Editar .env y agregar tu ANTHROPIC_API_KEY
+python -m venv .venv
+source .venv/bin/activate      # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 
-docker-compose up --build
+docker compose up -d postgres  # levanta PostgreSQL 16
+python -m app.db.seed          # datos de ejemplo
+python -m app.rag.ingest       # ingesta la base de conocimiento
+
+pytest -v                      # 61 tests
 ```
+
+Creá un `.env` en la raíz del proyecto con al menos esto:
+
+```
+DATABASE_URL=postgresql://agente:agente_dev_password@localhost:5432/agente_reservaciones
+ANTHROPIC_API_KEY=       # hace falta desde la Fase 4
+CLAUDE_MODEL=claude-haiku-4-5
+```
+
+> El host es `localhost` porque el compose publica el puerto 5432 del
+> contenedor en tu máquina. Si algún día corrés el código *dentro* de
+> Docker, ahí el host es `postgres` (el nombre del servicio) — pero eso
+> lo define el `environment:` del compose, no hace falta tocar el `.env`.
+
+**En Windows**, ChromaDB y onnxruntime necesitan el *Visual C++
+Redistributable*. Sin él, la ingesta falla con un `ImportError` de DLL
+que no dice cuál falta realmente:
+
+```powershell
+winget install --id Microsoft.VCRedist.2015+.x64 -e
+```
+
+## Servidor MCP
+
+Expone las 4 tools del negocio por Model Context Protocol, para que
+cualquier cliente compatible (Claude Desktop, Claude Code, un cliente
+propio con el SDK) las descubra y ejecute:
+
+| Tool | Qué hace | Fuente |
+|---|---|---|
+| `buscar_conocimiento` | Responde preguntas de información | RAG / Chroma |
+| `consultar_disponibilidad` | Horarios libres en una fecha | Postgres |
+| `crear_reservacion` | Agenda un horario | Postgres |
+| `escalar_caso` | Abre un ticket para un humano | Postgres |
+
+```bash
+python app/mcp_server/server.py     # transporte stdio
+```
+
+El servidor se puede lanzar desde cualquier directorio: resuelve sus
+rutas a partir de la ubicación del paquete, no del directorio actual
+(ver `app/rutas.py`).
+
+Para registrarlo en un cliente MCP, ver `.mcp.json` en la raíz del repo.
+Ese archivo apunta al intérprete del venv, así que en Linux o macOS hay
+que cambiar `.venv/Scripts/python.exe` por `.venv/bin/python`.
 
 ## RAG: probarlo ya mismo (sin Docker, sin Postgres)
 
@@ -105,7 +156,8 @@ reemplazalo por tu propia base de conocimiento cuando quieras.
 - [x] Fase 1 — Base de conocimiento (RAG): chunking, vector store (Chroma),
       búsqueda semántica, tests end-to-end
 - [x] Fase 2 — Datos de negocio (Postgres)
-- [ ] Fase 3 — Servidor MCP
+- [x] Fase 3 — Servidor MCP: las 4 tools expuestas vía protocolo, con
+      tests de la lógica y de la capa de protocolo (61 en total)
 - [ ] Fase 4 — Agente
 - [ ] Fase 5 — Evaluación
 - [ ] Fase 6 — Logging y observabilidad

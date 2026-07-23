@@ -20,25 +20,9 @@ necesitan.
    detectar después salvo auditando a mano.
 """
 
-from app.db.models import Cliente, HorarioDisponible, Reservacion
+from app.db.clientes import buscar_o_crear_cliente
+from app.db.models import HorarioDisponible, Reservacion
 from app.db.session import obtener_sesion
-
-
-def _buscar_o_crear_cliente(sesion, nombre: str, telefono: str | None, email: str | None):
-    """
-    Busca al cliente por teléfono (que es único en el esquema) y lo crea
-    si no existe. Sin teléfono no hay forma de reconocerlo, así que se
-    crea uno nuevo cada vez.
-    """
-    if telefono:
-        cliente = sesion.query(Cliente).filter_by(telefono=telefono).first()
-        if cliente is not None:
-            return cliente
-
-    cliente = Cliente(nombre=nombre, telefono=telefono, email=email)
-    sesion.add(cliente)
-    sesion.flush()  # para que tenga id antes de crear la reservación
-    return cliente
 
 
 def _horarios_alternativos(sesion, horario: HorarioDisponible) -> list[dict]:
@@ -123,7 +107,7 @@ def crear_reservacion(
                 "alternativas": _horarios_alternativos(sesion, horario),
             }
 
-        cliente = _buscar_o_crear_cliente(sesion, nombre_cliente, telefono, email)
+        cliente = buscar_o_crear_cliente(sesion, nombre_cliente, telefono, email)
 
         reservacion = Reservacion(
             cliente_id=cliente.id,
