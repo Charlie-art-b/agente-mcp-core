@@ -13,7 +13,12 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./app/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      # init.sql NO se monta a propósito. Todo lo que se deja en
+      # /docker-entrypoint-initdb.d/ lo ejecuta Postgres al crear la base, y
+      # entonces las tablas quedarían definidas en dos lugares (init.sql y
+      # app/db/models.py) que se desincronizan sin avisar. El esquema real lo
+      # crea SQLAlchemy desde los modelos; init.sql queda solo como
+      # documentación de referencia.
 
   chroma:
     image: chromadb/chroma:latest

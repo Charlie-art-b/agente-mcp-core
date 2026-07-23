@@ -7,12 +7,15 @@ cambiar a un cliente HTTP contra un servidor Chroma separado sin tocar
 el resto del código del RAG — por eso está aislado en este módulo.
 """
 
-import os
-
 import chromadb
 from chromadb.utils import embedding_functions
 
-RUTA_DEFECTO_DB = os.path.join("data", "chroma_local")
+from app.rutas import RUTA_CHROMA
+
+# Ruta absoluta a propósito: el servidor MCP lo lanza un cliente externo
+# desde un directorio cualquiera, y con una ruta relativa terminaría
+# creando un vector store vacío en otro lado (ver app/rutas.py).
+RUTA_DEFECTO_DB = str(RUTA_CHROMA)
 NOMBRE_COLECCION_DEFECTO = "conocimiento_negocio"
 
 # Modelo de embeddings local (no requiere llamar a ninguna API paga).

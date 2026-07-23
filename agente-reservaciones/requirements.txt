@@ -1,12 +1,15 @@
 # --- Core ---
 fastapi==0.115.0
-uvicorn[standard]==0.30.6
-pydantic==2.9.2
+uvicorn[standard]==0.51.0
+pydantic==2.13.4
 python-dotenv==1.0.1
 
 # --- Anthropic / MCP ---
 anthropic==0.34.2
-mcp==1.1.2
+# 1.28.x trae FastMCP (mcp.server.fastmcp), que genera el JSON Schema de
+# cada tool a partir de los type hints y el docstring. La 1.1.2 original
+# solo tenía la API de bajo nivel, con el schema escrito a mano.
+mcp==1.28.1
 
 # --- Base de datos ---
 sqlalchemy==2.0.35

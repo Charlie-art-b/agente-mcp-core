@@ -13,8 +13,10 @@ import os
 
 from app.rag.chunking import dividir_en_chunks
 from app.rag.store import VectorStore
+from app.rutas import CARPETA_DOCUMENTOS as _CARPETA_DOCUMENTOS
 
-CARPETA_DOCUMENTOS = os.path.join("data", "documents")
+# Absoluta, para que la ingesta funcione desde cualquier directorio.
+CARPETA_DOCUMENTOS = str(_CARPETA_DOCUMENTOS)
 EXTENSIONES_VALIDAS = (".md", ".txt")
 
 

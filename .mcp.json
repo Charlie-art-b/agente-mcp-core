@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agente-reservaciones": {
+      "command": "agente-reservaciones/.venv/Scripts/python.exe",
+      "args": ["agente-reservaciones/app/mcp_server/server.py"]
+    }
+  }
+}
