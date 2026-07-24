@@ -63,9 +63,11 @@ def sembrar_datos_ejemplo() -> None:
         sesion.add_all(horarios)
         sesion.commit()
 
-        print(f"✓ {len(clientes)} clientes creados")
-        print(f"✓ {len(servicios)} servicios creados")
-        print(f"✓ {len(horarios)} horarios disponibles creados")
+        # Sin caracteres no-ASCII: la consola de Windows (cp1252) revienta
+        # con UnicodeEncodeError al imprimir símbolos como ✓.
+        print(f"[OK] {len(clientes)} clientes creados")
+        print(f"[OK] {len(servicios)} servicios creados")
+        print(f"[OK] {len(horarios)} horarios disponibles creados")
 
     finally:
         sesion.close()

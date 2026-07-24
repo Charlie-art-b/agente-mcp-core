@@ -4,23 +4,25 @@ Agente de Reservaciones
 Usa Gemini para interpretar consultas del usuario y ejecutar las tools
 apropiadas vía MCP. Es el "cerebro" que decide qué hacer.
 
-Flujo:
-    1. Usuario hace una consulta (ej. "¿Tenés turno mañana para corte?")
-    2. Agente analiza con Gemini qué tool usar
-    3. Ejecuta la tool a través del cliente MCP
-    4. Procesa la respuesta y devuelve un texto natural
+Flujo por turno:
+    1. El usuario hace una consulta ("¿Tenés turno mañana para corte?").
+    2. Gemini decide, en texto, qué tool usar y con qué argumentos, con el
+       formato [TOOL: nombre] (args).
+    3. El agente parsea ese texto, ejecuta la tool vía MCP, y le devuelve el
+       resultado a Gemini para que redacte una respuesta en lenguaje natural.
 
->>> VERSIÓN CON DEBUG <<<
-Se agregaron prints y traceback.print_exc() para ver el error real que
-estaba quedando oculto por el except genérico. Una vez que encuentres
-y arregles el bug, podés quitar las líneas marcadas con "# DEBUG".
+Ciclo de vida de MCP:
+    La sesión MCP se abre y se cierra DENTRO de cada turno (ver ClienteMCP).
+    Antes se intentaba mantenerla viva entre turnos, pero eso choca con que
+    cada llamada síncrona abre su propio event loop con asyncio.run(): los
+    canales de anyio quedan atados al loop donde nacieron y el segundo turno
+    fallaba con ClosedResourceError. Abrir/cerrar por turno lo resuelve.
 """
 
 import asyncio
 import json
 import os
 import re
-import traceback
 from datetime import datetime
 
 from google import genai
@@ -30,156 +32,102 @@ from app.agente.cliente_mcp import ClienteMCP
 
 
 class AgenteReservaciones:
-    """Agente que entiende consultas y ejecuta actions a través de MCP."""
+    """Agente que entiende consultas y ejecuta acciones a través de MCP."""
 
     def __init__(self):
-        """Inicializa Gemini y el cliente MCP."""
-        # Obtener la API key del .env
+        """Inicializa el cliente de Gemini. La sesión MCP se abre por turno."""
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY no configurada en .env")
 
-        # En el SDK nuevo (google-genai) no existe genai.configure().
-        # Se crea un Client una sola vez y se reutiliza.
+        # En el SDK google-genai no existe genai.configure(): se crea un
+        # Client una vez y se reutiliza.
         self.client = genai.Client(api_key=api_key)
-
-        # Obtener el modelo de .env (por defecto gemini-3.6-flash)
         self.modelo = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
-        # Configuración de seguridad relajada (datos de prueba), reutilizable
+        # Seguridad relajada: son datos de prueba, no queremos que un falso
+        # positivo del filtro corte una respuesta legítima.
         self.safety_settings = [
-            types.SafetySetting(
-                category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                threshold="BLOCK_NONE",
-            ),
-            types.SafetySetting(
-                category="HARM_CATEGORY_HATE_SPEECH",
-                threshold="BLOCK_NONE",
-            ),
-            types.SafetySetting(
-                category="HARM_CATEGORY_HARASSMENT",
-                threshold="BLOCK_NONE",
-            ),
-            types.SafetySetting(
-                category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                threshold="BLOCK_NONE",
-            ),
+            types.SafetySetting(category=c, threshold="BLOCK_NONE")
+            for c in (
+                "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "HARM_CATEGORY_HATE_SPEECH",
+                "HARM_CATEGORY_HARASSMENT",
+                "HARM_CATEGORY_DANGEROUS_CONTENT",
+            )
         ]
 
-        # Inicializar cliente MCP
-        self.cliente_mcp = ClienteMCP()
-
-        # Historial de conversación para mantener contexto
+        # Historial de la conversación (texto en lenguaje natural).
         self.historial = []
 
         # Contexto operativo: guarda el resultado CRUDO de la última vez que
         # se ejecutó cada tool en esta conversación. Existe porque el
-        # historial de mensajes solo guarda texto en lenguaje natural, y ese
-        # texto no contiene datos estructurados como horario_id. Sin esto,
-        # el agente "olvida" el horario_id apenas Gemini redacta la
-        # respuesta bonita, y termina re-consultando disponibilidad en un
-        # loop en vez de avanzar a crear_reservacion.
+        # historial solo guarda el texto ya redactado, y ese texto no
+        # contiene datos estructurados como horario_id. Sin esto, el agente
+        # "olvida" el horario_id apenas Gemini redacta la respuesta bonita, y
+        # re-consulta disponibilidad en loop en vez de avanzar a reservar.
         self.contexto_tools: dict = {}
+
+    # --- API pública ---
 
     def consultar(self, pregunta_usuario: str) -> str:
         """
-        Procesa una pregunta del usuario y devuelve una respuesta.
+        Procesa una pregunta y devuelve la respuesta (interfaz síncrona).
 
-        Esta es una interfaz sincrónica que internamente ejecuta código async.
-
-        Args:
-            pregunta_usuario: la pregunta tal como la hizo el usuario
-
-        Returns:
-            Una respuesta en lenguaje natural
+        Internamente corre `responder` en su propio event loop. Usar esta
+        variante desde código síncrono (una CLI, un script). Desde código
+        async (FastAPI) usar `responder` directamente con await.
         """
-        return asyncio.run(self._consultar_async(pregunta_usuario))
+        return asyncio.run(self.responder(pregunta_usuario))
 
-    def cerrar(self):
+    async def responder(self, pregunta_usuario: str) -> str:
         """
-        Wrapper síncrono de cerrar_sesion(). Llamar UNA SOLA VEZ al terminar
-        toda la conversación (ej. al escribir 'salir' o en un except
-        KeyboardInterrupt), nunca después de cada pregunta.
+        Procesa una pregunta de forma asincrónica y devuelve la respuesta.
+
+        Abre una sesión MCP para este turno, ejecuta las tools que Gemini
+        pida, y la cierra al terminar (ver ClienteMCP para el porqué).
         """
-        asyncio.run(self.cerrar_sesion())
+        self.historial.append({"role": "user", "content": pregunta_usuario})
 
-    async def _consultar_async(self, pregunta_usuario: str) -> str:
+        prompt_sistema = self._construir_prompt_sistema()
+
+        respuesta = self.client.models.generate_content(
+            model=self.modelo,
+            contents=[{"role": "user", "parts": [{"text": prompt_sistema}]}]
+            + self._convertir_historial_para_gemini(),
+            config=types.GenerateContentConfig(safety_settings=self.safety_settings),
+        )
+        texto_gemini = respuesta.text
+
+        # Solo se abre el servidor MCP si Gemini realmente pidió una tool. Un
+        # saludo o una repregunta ("¿me das tu teléfono?") no necesitan tocar
+        # la base, así que no pagamos el arranque del subproceso.
+        if "[TOOL:" in texto_gemini:
+            async with ClienteMCP() as cli:
+                resultado_final = await self._procesar_respuesta_gemini(
+                    texto_gemini, cli, pregunta_original=pregunta_usuario
+                )
+        else:
+            resultado_final = texto_gemini
+
+        self.historial.append({"role": "assistant", "content": resultado_final})
+        return resultado_final
+
+    def cerrar(self) -> None:
         """
-        Procesa una pregunta de forma asincrónica.
+        Hook de fin de conversación.
 
-        Args:
-            pregunta_usuario: la pregunta del usuario
-
-        Returns:
-            Respuesta en lenguaje natural
+        Hoy no hace falta cerrar nada: la sesión MCP se abre y se cierra
+        dentro de cada turno (ver `responder`), no queda nada vivo entre
+        preguntas. Se mantiene el método porque las CLIs lo llaman al salir
+        y porque es el lugar natural para cualquier limpieza futura.
         """
-        try:
-            # Agregar la pregunta al historial
-            self.historial.append({"role": "user", "content": pregunta_usuario})
+        return None
 
-            # Prompt del sistema que define el comportamiento del agente
-            prompt_sistema = self._construir_prompt_sistema()
-
-            # Llamar a Gemini con el historial
-            respuesta = self.client.models.generate_content(
-                model=self.modelo,
-                contents=[
-                    {"role": "user", "parts": [{"text": prompt_sistema}]},
-                ]
-                + self._convertir_historial_para_gemini(),
-                config=types.GenerateContentConfig(
-                    safety_settings=self.safety_settings,
-                ),
-            )
-
-            # Procesar la respuesta de Gemini
-            texto_gemini = respuesta.text
-
-            # Gemini puede decidir llamar a tools. La comunicación es por patrones
-            # embebidos en el texto: [TOOL: crear_reservacion] (args)
-            resultado_final = await self._procesar_respuesta_gemini(
-                texto_gemini, pregunta_original=pregunta_usuario
-            )
-
-            # Agregar la respuesta final al historial
-            self.historial.append({"role": "assistant", "content": resultado_final})
-
-            return resultado_final
-
-        except Exception:
-            # NOTA: ya no hay un `finally` que cierre el cliente MCP acá.
-            # Antes se cerraba (y por lo tanto se relanzaba el subprocess
-            # completo del servidor MCP) después de CADA pregunta, lo cual
-            # era costoso y causaba fallas intermitentes en la primera
-            # consulta de una sesión (el servidor recién levantado necesita
-            # cargar el modelo de embeddings de Chroma). Ahora la sesión MCP
-            # se mantiene viva durante toda la conversación y se cierra una
-            # sola vez, explícitamente, con self.cerrar_sesion().
-            raise
-
-    async def cerrar_sesion(self):
-        """
-        Cierra la sesión MCP y el subprocess del servidor.
-
-        Llamar esto UNA SOLA VEZ, al finalizar toda la conversación
-        (ej. cuando el usuario escribe 'salir' o al capturar Ctrl+C),
-        no después de cada pregunta individual.
-        """
-        try:
-            await self.cliente_mcp.cerrar()
-        except Exception:
-            pass
+    # --- Construcción del prompt ---
 
     def _construir_prompt_sistema(self) -> str:
-        """
-        Construye el prompt del sistema que define el comportamiento del agente.
-
-        Define:
-        - Qué es el agente
-        - Qué tools tiene disponibles y cuándo usar cada una
-        - Cómo comunicar que quiere ejecutar una tool
-        """
-
+        """Define qué es el agente, sus tools, y cómo pedir una ejecución."""
         hoy = datetime.now().strftime("%Y-%m-%d")
 
         return f"""Eres un agente de IA para un negocio de reservaciones. Hoy es {hoy}.
@@ -234,16 +182,9 @@ Ahora, ayuda al usuario con su pregunta."""
 
     def _construir_contexto_operativo(self) -> str:
         """
-        Construye un bloque de texto con los resultados crudos de las tools
-        ya ejecutadas en esta conversación (ver self.contexto_tools).
-
-        Esto le da a Gemini acceso a datos estructurados (como horario_id)
-        que de otra forma se perderían, porque el historial de mensajes solo
-        contiene el texto en lenguaje natural ya redactado, sin esos datos.
-
-        Returns:
-            Un string para insertar en el prompt de sistema, vacío si todavía
-            no se ejecutó ninguna tool en esta conversación.
+        Inserta en el prompt los resultados crudos de las tools ya ejecutadas
+        en esta conversación, para que Gemini tenga acceso a datos como
+        horario_id que el historial en lenguaje natural no conserva.
         """
         if not self.contexto_tools:
             return ""
@@ -256,92 +197,59 @@ al usuario en crudo):**
 {bloque}
 
 Usa estos datos si ya tienen lo que necesitas — por ejemplo, si el usuario ya
-eligió un horario y ya diste ese horario antes, el horario_id correspondiente
-está en "consultar_disponibilidad" -> "resultado" -> "disponibles". NO vuelvas
-a llamar consultar_disponibilidad solo para "recuperar" un horario_id que ya
-tenés acá; usalo directamente en crear_reservacion.
+eligió un horario que vos ya listaste, el horario_id está en
+"consultar_disponibilidad" -> "resultado" -> "disponibles". NO vuelvas a llamar
+consultar_disponibilidad solo para "recuperar" un horario_id que ya tenés acá;
+usalo directamente en crear_reservacion.
 """
 
+    # --- Ejecución de tools ---
+
     async def _procesar_respuesta_gemini(
-        self, texto_gemini: str, pregunta_original: str = ""
+        self, texto_gemini: str, cli: ClienteMCP, pregunta_original: str = ""
     ) -> str:
         """
-        Procesa la respuesta de Gemini y ejecuta tools si es necesario.
-
-        Busca patrones [TOOL: ...] en el texto y los ejecuta.
+        Busca patrones [TOOL: ...] en la respuesta de Gemini, ejecuta las
+        tools contra `cli`, y reemplaza cada comando por su resultado.
 
         Args:
-            texto_gemini: texto devuelto por Gemini
+            texto_gemini: texto devuelto por Gemini.
+            cli: sesión MCP abierta para este turno.
             pregunta_original: la pregunta tal como la escribió el usuario,
-                necesaria para que la segunda llamada a Gemini (la que redacta
-                la respuesta final) sepa qué se preguntó y no muestre de más.
-
-        Returns:
-            El texto con los comandos de tool reemplazados por sus resultados
+                para que la segunda llamada a Gemini (la que redacta) sepa
+                qué se preguntó y no muestre de más.
         """
         resultado = texto_gemini
         patron = r"\[TOOL: (\w+)\]\s*\((.*?)\)"
         matches = list(re.finditer(patron, resultado))
 
-        # DEBUG ---------------------------------------------------------
-        print("=" * 70)
-        print("[DEBUG] TEXTO CRUDO DE GEMINI:")
-        print(repr(texto_gemini))
-        print(f"[DEBUG] Matches de [TOOL: ...] encontrados: {len(matches)}")
-        print("=" * 70)
-        # -----------------------------------------------------------------
-
-        # Procesar de atrás para adelante para no desalinear posiciones
+        # De atrás para adelante, para no desalinear las posiciones al
+        # reemplazar cada comando por un texto de largo distinto.
         for match in reversed(matches):
             nombre_tool = match.group(1)
             args_str = match.group(2)
 
-            # DEBUG -------------------------------------------------
-            print(f"[DEBUG] Tool detectada: {nombre_tool!r}")
-            print(f"[DEBUG] Args crudos: {args_str!r}")
-            # ---------------------------------------------------------
-
             try:
-                # Parsear los argumentos
                 args = self._parsear_argumentos(args_str)
-                print(f"[DEBUG] Args parseados: {args}")  # DEBUG
+                resultado_tool = await cli.ejecutar_tool(nombre_tool, **args)
 
-                # Ejecutar la tool de forma asincrónica
-                resultado_tool = await self.cliente_mcp.ejecutar_tool(nombre_tool, **args)
-                print(f"[DEBUG] Resultado crudo de la tool: {resultado_tool}")  # DEBUG
-
-                # Guardar en el contexto operativo para que esté disponible
-                # en turnos futuros (ver comentario en __init__)
+                # Guardar para turnos futuros (ver contexto_tools en __init__).
                 self.contexto_tools[nombre_tool] = {
                     "args": args,
                     "resultado": resultado_tool,
                 }
 
-                # Convertir el resultado a JSON
                 resultado_json = json.dumps(resultado_tool, ensure_ascii=False, indent=2)
-
-                # Reemplazar el comando con el resultado
                 reemplazo = (
                     f"[Resultado de {nombre_tool}]:\n{resultado_json}\n[Fin resultado]"
                 )
-                resultado = (
-                    resultado[: match.start()]
-                    + reemplazo
-                    + resultado[match.end() :]
-                )
-
             except Exception as e:
-                # DEBUG: acá es donde se estaba tragando el error real.
-                # Este print + traceback te va a mostrar la excepción completa
-                # en la consola, con el archivo y línea exactos donde truena.
-                print(f"[DEBUG] EXCEPCIÓN REAL al ejecutar {nombre_tool}:")
-                traceback.print_exc()
+                reemplazo = f"Error al ejecutar {nombre_tool}: {e}"
 
-                # Si la tool falla, reemplazar con un mensaje de error
-                error_msg = f"Error al ejecutar {nombre_tool}: {str(e)}"
-                resultado = resultado[: match.start()] + error_msg + resultado[match.end() :]
+            resultado = resultado[: match.start()] + reemplazo + resultado[match.end() :]
 
-        # Si hay resultados embebidos, hacer otra llamada a Gemini
+        # Si se ejecutó alguna tool, una segunda llamada a Gemini redacta la
+        # respuesta final a partir de los resultados.
         if "[Resultado de" in resultado:
             resultado = await self._gemini_procesar_resultados(
                 resultado, pregunta_original
@@ -351,34 +259,29 @@ tenés acá; usalo directamente en crear_reservacion.
 
     def _parsear_argumentos(self, args_str: str) -> dict:
         """
-        Parsea una cadena de argumentos de la forma:
-            arg1="valor", arg2=5, telefono="123-456"
+        Parsea argumentos de la forma: arg1="valor", arg2=5, arg3=true
 
-        Args:
-            args_str: string con los argumentos
-
-        Returns:
-            dict con los argumentos parseados
+        Soporta strings entre comillas, enteros, floats (incluidos negativos)
+        y booleanos. Es deliberadamente conservador: si un valor no encaja en
+        esos tipos, no se incluye (mejor omitir que pasar basura a la tool).
         """
         args = {}
-        patron = r'(\w+)=(".*?"|\d+|true|false)'
+        patron = r'(\w+)\s*=\s*("[^"]*"|-?\d+\.\d+|-?\d+|true|false)'
 
         for match in re.finditer(patron, args_str):
             clave = match.group(1)
             valor = match.group(2)
 
-            # Procesar el valor
             if valor.startswith('"'):
                 valor = valor.strip('"')
             elif valor == "true":
                 valor = True
             elif valor == "false":
                 valor = False
+            elif "." in valor:
+                valor = float(valor)
             else:
-                try:
-                    valor = int(valor)
-                except ValueError:
-                    valor = float(valor)
+                valor = int(valor)
 
             args[clave] = valor
 
@@ -387,16 +290,7 @@ tenés acá; usalo directamente en crear_reservacion.
     async def _gemini_procesar_resultados(
         self, texto_con_resultados: str, pregunta_original: str = ""
     ) -> str:
-        """
-        Segunda llamada a Gemini para que procese los resultados de las tools.
-
-        Args:
-            texto_con_resultados: texto que contiene [Resultado de ...] embebido
-            pregunta_original: la pregunta tal como la escribió el usuario
-
-        Returns:
-            Respuesta limpia sin los comandos de tool
-        """
+        """Segunda llamada a Gemini: redacta la respuesta final para el usuario."""
         prompt = f"""El usuario preguntó exactamente esto:
 
 "{pregunta_original}"
@@ -426,11 +320,10 @@ Instrucciones para tu respuesta:
             model=self.modelo,
             contents=prompt,
         )
-
         return respuesta.text
 
     def _convertir_historial_para_gemini(self) -> list:
-        """Convierte el historial de conversación al formato de Gemini."""
+        """Convierte el historial interno al formato de contenidos de Gemini."""
         mensajes = []
         for msg in self.historial:
             rol = "user" if msg["role"] == "user" else "model"

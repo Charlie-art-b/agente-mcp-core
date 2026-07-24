@@ -128,7 +128,11 @@ async def consulta(request: ConsultaRequest):
 
     try:
         agente = obtener_agente()
-        respuesta = agente.consultar(request.pregunta)
+        # `responder` es la variante async: se hace await directamente porque
+        # ya estamos dentro del event loop de uvicorn. Llamar el `consultar`
+        # síncrono acá reventaría ("asyncio.run() cannot be called from a
+        # running event loop").
+        respuesta = await agente.responder(request.pregunta)
         return ConsultaResponse(respuesta=respuesta, exitoso=True)
 
     except Exception as e:

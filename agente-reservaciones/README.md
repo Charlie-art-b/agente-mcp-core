@@ -203,8 +203,12 @@ python -m app.rag.ingest
 **2. Modo interactivo (pruebas manuales)**
 
 ```bash
-python tests/test_agente.py
+python scripts/chat.py
 ```
+
+> Los scripts de prueba manual (chat interactivo, verificaciones sueltas)
+> viven en `scripts/`, no en `tests/`. `tests/` es solo para tests de
+> pytest de verdad — un script manual ahí rompe la recolección de pytest.
 
 Esto abre un chat donde puedes hacer preguntas. El agente:
 - Analiza la consulta con Gemini
