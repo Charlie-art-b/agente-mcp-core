@@ -237,7 +237,31 @@ Endpoints:
   {"pregunta": "¿Hay disponibilidad mañana?"}
   ```
 - `GET /estado` - Health check
+- `POST /reiniciar` - Descarta la conversación actual y arranca una nueva
 - Docs interactivos: `http://localhost:8000/docs`
+
+**4. Interfaz web (chat en el navegador)**
+
+Un chat construido con Streamlit que habla con la API HTTP — no importa el
+agente directamente. Es deliberado: la interfaz es "un canal más", igual
+que lo será WhatsApp, y ambos pegan al mismo endpoint sin tocar la lógica.
+
+Se corre en dos terminales, ambas desde la raíz del proyecto:
+
+```bash
+# Terminal 1 — la API con el agente
+python -m uvicorn app.main:app --port 8000
+
+# Terminal 2 — la interfaz
+streamlit run app/interfaz_web.py
+```
+
+Y se abre <http://localhost:8501> en el navegador. La barra lateral muestra
+si la API está conectada, trae preguntas de ejemplo, y un botón para
+arrancar una conversación nueva.
+
+> Es una demo de un solo usuario: el agente vive como instancia única en
+> la API, así que dos pestañas abiertas comparten la misma conversación.
 
 ### Cómo funciona el agente
 
@@ -275,7 +299,7 @@ Edítalo para ajustar el comportamiento a tu caso de uso.
 - [x] Fase 2 — Datos de negocio (Postgres)
 - [x] Fase 3 — Servidor MCP: las 4 tools expuestas vía protocolo, con
       tests de la lógica y de la capa de protocolo (61 en total)
-- [ ] Fase 4 — Agente
+- [x] Fase 4 — Agente (Gemini + MCP), con API HTTP e interfaz web de chat
 - [ ] Fase 5 — Evaluación
 - [ ] Fase 6 — Logging y observabilidad
 - [ ] Fase 7 — Demo y presentación

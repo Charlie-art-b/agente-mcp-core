@@ -7,6 +7,7 @@ Endpoints:
 - POST /consulta - Procesa una consulta del usuario
 - GET /estado - Health check del servidor
 - POST /chat - Endpoint de chat para conversación continua
+- POST /reiniciar - Descarta la conversación actual y arranca una nueva
 
 Para correr:
     python -m uvicorn app.main:app --reload --port 8000
@@ -87,6 +88,7 @@ async def raiz():
             "consulta": "POST /consulta - Procesar una consulta del usuario",
             "estado": "GET /estado - Estado del servidor",
             "chat": "POST /chat - Continuar una conversación",
+            "reiniciar": "POST /reiniciar - Arrancar una conversación nueva",
             "docs": "GET /docs - Documentación interactiva",
         },
     }
@@ -161,6 +163,21 @@ async def chat(request: ConsultaRequest):
         JSON con la respuesta del agente
     """
     return await consulta(request)
+
+
+@app.post("/reiniciar", tags=["Agente"])
+async def reiniciar():
+    """
+    Descarta la conversación actual y arranca una nueva.
+
+    El agente vive como una única instancia global (para conservar el
+    historial entre mensajes), así que "reiniciar" es descartarla: la
+    próxima consulta crea una instancia fresca, sin historial ni contexto
+    de tools de la conversación anterior.
+    """
+    global _agente
+    _agente = None
+    return {"reiniciado": True}
 
 
 # Manejo de errores global

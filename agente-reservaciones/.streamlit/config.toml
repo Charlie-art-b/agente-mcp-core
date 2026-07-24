@@ -1,0 +1,21 @@
+# Tema de la interfaz web (Streamlit lo lee automáticamente desde
+# .streamlit/config.toml al correr desde la raíz del proyecto).
+#
+# Paleta oscura y sobria: fondo carbón cálido, texto marfil, y un acento
+# champán/bronce para los detalles interactivos.
+
+[theme]
+base = "dark"
+primaryColor = "#C2A878"
+backgroundColor = "#131110"
+secondaryBackgroundColor = "#1C1917"
+textColor = "#E9E4DB"
+font = "sans serif"
+
+[server]
+# Sin prompts interactivos ni intentos de abrir el navegador solo:
+# el usuario abre http://localhost:8501 cuando quiera.
+headless = true
+
+[browser]
+gatherUsageStats = false
