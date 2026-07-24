@@ -158,6 +158,111 @@ Los documentos de conocimiento van en `data/documents/` como `.md` o
 `.txt`. El archivo `ejemplo_prueba.md` es solo contenido de prueba —
 reemplazalo por tu propia base de conocimiento cuando quieras.
 
+## Agente: Fase 4
+
+El agente es el "cerebro" que decide qué tools ejecutar. Conecta Gemini (LLM)
+con el servidor MCP (tools) y orquesta todo para responder consultas del usuario.
+
+### Arquitectura del Agente
+
+```
+Usuario: "¿Tenés turno para corte mañana?"
+                   ↓
+         AgenteReservaciones
+                   ↓
+         [Gemini analiza la consulta]
+                   ↓
+     Decide: "Necesito consultar_disponibilidad"
+                   ↓
+         ClienteMCP ejecuta la tool
+                   ↓
+         [Gemini procesa el resultado]
+                   ↓
+     Respuesta: "Sí, tengo turnos libres mañana a las..."
+```
+
+### Correr el agente
+
+**1. Setup (primera vez)**
+
+```bash
+# Clonar el proyecto e instalar dependencias (ya cubierto arriba)
+# ...
+
+# Poblar la BD y el vector store
+docker compose up -d postgres
+python -m app.db.seed
+python -m app.rag.ingest
+
+# Obtener API key de Gemini en https://aistudio.google.com/apikey
+# Agregarlo a .env:
+# GEMINI_API_KEY=tu_clave_aqui
+# GEMINI_MODEL=gemini-3.6-flash
+```
+
+**2. Modo interactivo (pruebas manuales)**
+
+```bash
+python tests/test_agente.py
+```
+
+Esto abre un chat donde puedes hacer preguntas. El agente:
+- Analiza la consulta con Gemini
+- Decide qué tool ejecutar (o si simplemente responder con conocimiento)
+- Ejecuta la tool a través del servidor MCP
+- Devuelve una respuesta en lenguaje natural
+
+Ejemplos de consultas:
+
+```
+"¿Qué servicios ofrecen?"                    → buscar_conocimiento
+"¿Hay disponibilidad para corte mañana?"     → consultar_disponibilidad
+"Quiero reservar para mañana a las 14:00"    → consultar_disponibilidad + crear_reservacion
+"Necesito cancelar mi cita"                   → escalar_caso (porque no hay tool de cancelación)
+```
+
+**3. API HTTP (futuro: client web / WhatsApp)**
+
+```bash
+python -m uvicorn app.main:app --reload --port 8000
+```
+
+Endpoints:
+- `POST /consulta` - Procesar una consulta
+  ```json
+  {"pregunta": "¿Hay disponibilidad mañana?"}
+  ```
+- `GET /estado` - Health check
+- Docs interactivos: `http://localhost:8000/docs`
+
+### Cómo funciona el agente
+
+1. **Inicialización**: Conecta con Gemini API y lanza el servidor MCP en un subprocess
+
+2. **Análisis de consulta**: Gemini lee la pregunta y el contexto (tools disponibles, fechas, etc.)
+
+3. **Selección de tool**: Gemini decide si necesita ejecutar alguna tool
+   - Si no: devuelve una respuesta directa
+   - Si sí: genera un comando `[TOOL: nombre] (arg1=valor1, arg2=valor2)`
+
+4. **Ejecución**: El cliente MCP ejecuta la tool a través del servidor (subprocess con stdio)
+
+5. **Post-procesamiento**: Gemini lee el resultado y genera una respuesta natural
+
+6. **Historial**: El agente mantiene el historial de la conversación para dar contexto a Gemini
+
+### Personalización
+
+El prompt del sistema está en `app/agente/agent.py` en la función `_construir_prompt_sistema()`.
+Ahí se define:
+
+- Qué tools tiene el agente disponible y cuándo usarlas
+- Tono y personalidad del agente
+- Reglas de negocio (ej. "nunca inventes un horario_id")
+- Formato de respuesta
+
+Edítalo para ajustar el comportamiento a tu caso de uso.
+
 ## Estado del proyecto
 
 - [x] Fase 0 — Fundaciones (estructura, Docker, stack definido)
