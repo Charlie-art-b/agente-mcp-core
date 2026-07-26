@@ -48,7 +48,9 @@ def ingestar(carpeta: str = CARPETA_DOCUMENTOS, store: VectorStore | None = None
         chunks = dividir_en_chunks(contenido, fuente=nombre_archivo)
         store.agregar_chunks(chunks)
         total_chunks += len(chunks)
-        print(f"  ✓ {nombre_archivo}: {len(chunks)} chunks")
+        # Sin caracteres no-ASCII: la consola de Windows (cp1252) revienta
+        # con UnicodeEncodeError al imprimir símbolos como ✓.
+        print(f"  [OK] {nombre_archivo}: {len(chunks)} chunks")
 
     return total_chunks
 

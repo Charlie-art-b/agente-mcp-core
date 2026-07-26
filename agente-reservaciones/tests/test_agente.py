@@ -1,18 +1,22 @@
 """
-Tests del agente (Fase 4)
-=========================
+Tests del agente (Fase 4, function calling nativo)
+==================================================
 Prueban la lógica del agente SIN llamar a Gemini ni levantar el servidor
 MCP: tanto el cliente de Gemini como el ClienteMCP se reemplazan por dobles
 de prueba. Así los tests corren rápido, sin red, sin cuota y sin depender
 de que Postgres esté arriba.
 
-Lo que se valida es el bucle del agente: detectar el patrón [TOOL: ...],
-parsear los argumentos, ejecutar la tool, y redactar la respuesta final.
-La conexión real con Gemini y con las tools ya está cubierta por los
-scripts de scripts/ (que sí usan las APIs reales) y por los tests de MCP.
+Lo que se valida es el bucle de function calling: que el agente ejecute
+la tool que Gemini pide (con los argumentos ya parseados por el SDK),
+encadene varias si hace falta, conserve los resultados en el historial
+(lo que reemplaza al viejo parche del horario_id), y redacte la respuesta
+final. La conexión real con Gemini y con las tools está cubierta por los
+scripts de scripts/ y por los tests de MCP.
 """
 
 import pytest
+
+from google.genai import types
 
 from app.agente.agent import AgenteReservaciones
 
@@ -20,22 +24,45 @@ from app.agente.agent import AgenteReservaciones
 # --- Dobles de prueba ---
 
 
+class _FunctionCallFalso:
+    def __init__(self, name, args):
+        self.name = name
+        self.args = args
+
+
+class _CandidatoFalso:
+    def __init__(self, content):
+        self.content = content
+
+
 class _RespuestaGemini:
-    def __init__(self, texto: str):
-        self.text = texto
+    """
+    Imita lo que devuelve client.models.generate_content.
+
+    - Un turno que pide tools: function_calls = [..], text = None.
+    - Un turno final: function_calls = None, text = "la respuesta".
+    """
+
+    def __init__(self, function_calls=None, text=None):
+        self.function_calls = function_calls
+        self.text = text
+        # El agente guarda candidates[0].content en el historial y lo
+        # reenvía; el cliente falso ignora los contents, así que alcanza
+        # con un objeto centinela.
+        self.candidates = [_CandidatoFalso(object())]
 
 
 class _ClienteGeminiFalso:
-    """Devuelve textos predefinidos, uno por cada llamada a generate_content."""
+    """Devuelve respuestas predefinidas, una por cada generate_content."""
 
-    def __init__(self, textos):
-        self._textos = list(textos)
+    def __init__(self, respuestas):
+        self._respuestas = list(respuestas)
         self.llamadas = []
         self.models = self
 
     def generate_content(self, **kwargs):
         self.llamadas.append(kwargs)
-        return _RespuestaGemini(self._textos.pop(0))
+        return self._respuestas.pop(0)
 
 
 class _ClienteMCPFalso:
@@ -61,6 +88,11 @@ class _ClienteMCPFalso:
         return _ClienteMCPFalso.resultado
 
 
+def fc(nombre, **args):
+    """Atajo para un function call falso."""
+    return _FunctionCallFalso(nombre, args)
+
+
 @pytest.fixture
 def agente(monkeypatch):
     """Agente con el cliente de Gemini y el ClienteMCP reemplazados por dobles."""
@@ -70,105 +102,150 @@ def agente(monkeypatch):
 
     a = AgenteReservaciones()
 
-    def usar_textos(*textos):
-        a.client = _ClienteGeminiFalso(textos)
+    def usar_respuestas(*respuestas):
+        a.client = _ClienteGeminiFalso(respuestas)
         return a
 
-    a.usar_textos = usar_textos
+    a.usar_respuestas = usar_respuestas
     return a
 
 
-# --- El parser de argumentos ---
+# --- Declaración de tools ---
 
 
-def test_parsea_string_entero_y_booleano(agente):
-    args = agente._parsear_argumentos('nombre="Ana Pérez", horario_id=5, ok=true')
-
-    assert args == {"nombre": "Ana Pérez", "horario_id": 5, "ok": True}
-
-
-def test_parsea_floats_y_negativos(agente):
-    args = agente._parsear_argumentos("precio=8000.50, saldo=-3, ajuste=-1.5")
-
-    assert args == {"precio": 8000.50, "saldo": -3, "ajuste": -1.5}
-
-
-def test_ignora_valores_que_no_reconoce(agente):
-    """Mejor omitir un valor raro que pasarle basura a la tool."""
-    args = agente._parsear_argumentos('fecha="2026-08-01", raro=<algo>')
-
-    assert args == {"fecha": "2026-08-01"}
+def test_declara_las_cuatro_tools_para_gemini(agente):
+    # self._tools es [Tool(function_declarations=[...4...])]
+    nombres = {d.name for d in agente._tools[0].function_declarations}
+    assert nombres == {
+        "buscar_conocimiento",
+        "consultar_disponibilidad",
+        "crear_reservacion",
+        "escalar_caso",
+    }
 
 
-# --- El bucle de tool-calling ---
+def test_los_parametros_obligatorios_estan_declarados(agente):
+    decls = {d.name: d for d in agente._tools[0].function_declarations}
+    # El SDK convierte el dict de parámetros en un objeto Schema.
+    crear = decls["crear_reservacion"].parameters
+    # horario_id y nombre_cliente son obligatorios; telefono/email no.
+    assert set(crear.required) == {"horario_id", "nombre_cliente"}
 
 
-@pytest.mark.asyncio
-async def test_ejecuta_la_tool_que_gemini_pide(agente):
-    a = agente.usar_textos(
-        '[TOOL: consultar_disponibilidad] (fecha="2026-07-25", servicio="corte")',
-        "Tenemos las 09:00 y las 10:00 disponibles. ¿Cuál preferís?",
-    )
-
-    respuesta = await a.responder("¿Tenés campo mañana para corte?")
-
-    # Se ejecutó la tool correcta con los argumentos parseados.
-    assert _ClienteMCPFalso.ejecutadas == [
-        ("consultar_disponibilidad", {"fecha": "2026-07-25", "servicio": "corte"})
-    ]
-    # La respuesta final es la segunda redacción de Gemini, sin el [TOOL].
-    assert "09:00" in respuesta
-    assert "[TOOL" not in respuesta
+# --- El bucle de function calling ---
 
 
 @pytest.mark.asyncio
 async def test_sin_tool_devuelve_el_texto_directo(agente):
-    """Si Gemini no pide ninguna tool, no se llama a MCP ni se redacta de nuevo."""
-    a = agente.usar_textos("¡Hola! ¿En qué te puedo ayudar?")
+    """Un saludo no dispara tools ni abre MCP."""
+    a = agente.usar_respuestas(_RespuestaGemini(text="¡Hola! ¿En qué te ayudo?"))
 
     respuesta = await a.responder("Hola")
 
-    assert respuesta == "¡Hola! ¿En qué te puedo ayudar?"
+    assert respuesta == "¡Hola! ¿En qué te ayudo?"
     assert _ClienteMCPFalso.ejecutadas == []
-    assert len(a.client.llamadas) == 1  # una sola llamada, sin segunda redacción
+    assert len(a.client.llamadas) == 1  # una sola llamada a Gemini
 
 
 @pytest.mark.asyncio
-async def test_guarda_el_resultado_en_el_contexto_operativo(agente):
-    """El resultado crudo queda disponible para turnos futuros (horario_id, etc.)."""
-    a = agente.usar_textos(
-        '[TOOL: consultar_disponibilidad] (fecha="2026-07-25")',
-        "Hay dos horarios libres.",
+async def test_ejecuta_la_tool_con_los_argumentos_que_gemini_manda(agente):
+    a = agente.usar_respuestas(
+        _RespuestaGemini(
+            function_calls=[fc("consultar_disponibilidad", fecha="2026-07-25", servicio="corte")]
+        ),
+        _RespuestaGemini(text="Tenemos las 09:00 y las 10:00 disponibles."),
+    )
+
+    respuesta = await a.responder("¿Tenés campo mañana para corte?")
+
+    assert _ClienteMCPFalso.ejecutadas == [
+        ("consultar_disponibilidad", {"fecha": "2026-07-25", "servicio": "corte"})
+    ]
+    assert "09:00" in respuesta
+    assert len(a.client.llamadas) == 2  # pedir tool + redactar
+
+
+@pytest.mark.asyncio
+async def test_encadena_consultar_y_reservar_en_un_mismo_turno(agente):
+    """Gemini puede pedir una tool, ver el resultado, y pedir la siguiente."""
+    a = agente.usar_respuestas(
+        _RespuestaGemini(function_calls=[fc("consultar_disponibilidad", fecha="2026-07-25")]),
+        _RespuestaGemini(
+            function_calls=[fc("crear_reservacion", horario_id=1, nombre_cliente="Ana")]
+        ),
+        _RespuestaGemini(text="Listo Ana, te agendé a las 09:00."),
+    )
+
+    respuesta = await a.responder("Reservame un corte para mañana, soy Ana")
+
+    nombres_ejecutados = [n for n, _ in _ClienteMCPFalso.ejecutadas]
+    assert nombres_ejecutados == ["consultar_disponibilidad", "crear_reservacion"]
+    assert "agendé" in respuesta
+
+
+@pytest.mark.asyncio
+async def test_el_resultado_de_la_tool_queda_en_el_historial(agente):
+    """
+    Esto es lo que reemplaza al parche del horario_id: el resultado crudo
+    de la tool queda en el historial como function_response, así que en un
+    turno futuro el modelo lo tiene disponible.
+    """
+    a = agente.usar_respuestas(
+        _RespuestaGemini(function_calls=[fc("consultar_disponibilidad", fecha="2026-07-25")]),
+        _RespuestaGemini(text="Hay dos horarios libres."),
     )
 
     await a.responder("¿Qué hay mañana?")
 
-    assert "consultar_disponibilidad" in a.contexto_tools
-    guardado = a.contexto_tools["consultar_disponibilidad"]["resultado"]
-    assert guardado["disponibles"][0]["horario_id"] == 1
+    # Busco en el historial una parte con function_response que lleve el resultado.
+    respuestas_de_tools = [
+        parte.function_response
+        for contenido in a.historial
+        for parte in getattr(contenido, "parts", [])
+        if getattr(parte, "function_response", None) is not None
+    ]
+    assert len(respuestas_de_tools) == 1
+    fr = respuestas_de_tools[0]
+    assert fr.name == "consultar_disponibilidad"
+    assert fr.response["disponibles"][0]["horario_id"] == 1
 
 
 @pytest.mark.asyncio
 async def test_una_tool_que_falla_no_tumba_el_turno(agente, monkeypatch):
-    """Si la tool lanza, el error se comunica en la respuesta, no explota."""
+    """Si la tool lanza, el error se le pasa a Gemini como resultado; no explota."""
 
     async def explota(self, nombre_tool, **kwargs):
         raise RuntimeError("servidor caído")
 
     monkeypatch.setattr(_ClienteMCPFalso, "ejecutar_tool", explota)
 
-    a = agente.usar_textos(
-        '[TOOL: consultar_disponibilidad] (fecha="2026-07-25")',
-        "Disculpá, no pude consultar la disponibilidad en este momento.",
+    a = agente.usar_respuestas(
+        _RespuestaGemini(function_calls=[fc("consultar_disponibilidad", fecha="2026-07-25")]),
+        _RespuestaGemini(text="Disculpá, no pude consultar la disponibilidad."),
     )
 
     respuesta = await a.responder("¿Hay campo mañana?")
 
-    # El turno terminó con una respuesta redactada, sin propagar la excepción.
     assert isinstance(respuesta, str)
-    assert "[TOOL" not in respuesta
+    assert "disculpá" in respuesta.lower()
+
+
+@pytest.mark.asyncio
+async def test_corta_si_el_modelo_pide_tools_sin_parar(agente):
+    """Un modelo confundido que pide tools para siempre no debe colgar el turno."""
+    # Más respuestas-con-tool que el tope, para forzar el corte.
+    muchas = [
+        _RespuestaGemini(function_calls=[fc("consultar_disponibilidad", fecha="2026-07-25")])
+        for _ in range(AgenteReservaciones.MAX_ITERACIONES_TOOLS + 2)
+    ]
+    a = agente.usar_respuestas(*muchas)
+
+    respuesta = await a.responder("dale")
+
+    # Devuelve un mensaje de cortesía y no hace infinitas llamadas.
+    assert "no pude completar" in respuesta.lower()
+    assert len(a.client.llamadas) <= AgenteReservaciones.MAX_ITERACIONES_TOOLS + 1
 
 
 def test_cerrar_no_falla(agente):
-    """El hook de cierre se puede llamar siempre, sin sesión abierta."""
     agente.cerrar()  # no debe lanzar

@@ -1,28 +1,37 @@
 """
 Agente de Reservaciones
 ========================
-Usa Gemini para interpretar consultas del usuario y ejecutar las tools
-apropiadas vía MCP. Es el "cerebro" que decide qué hacer.
+Usa Gemini (con function calling nativo) para interpretar consultas del
+usuario y ejecutar las tools apropiadas vía MCP. Es el "cerebro" que
+decide qué hacer.
 
-Flujo por turno:
+Flujo de un turno:
     1. El usuario hace una consulta ("¿Tenés turno mañana para corte?").
-    2. Gemini decide, en texto, qué tool usar y con qué argumentos, con el
-       formato [TOOL: nombre] (args).
-    3. El agente parsea ese texto, ejecuta la tool vía MCP, y le devuelve el
-       resultado a Gemini para que redacte una respuesta en lenguaje natural.
+    2. Se le manda a Gemini junto con las DECLARACIONES de las 4 tools.
+    3. Si Gemini decide usar una tool, devuelve una llamada estructurada
+       (nombre + argumentos ya parseados por el SDK, sin regex).
+    4. El agente ejecuta esa tool vía MCP, le devuelve el resultado a
+       Gemini, y este redacta la respuesta final en lenguaje natural. Si
+       hace falta encadenar tools (consultar y después reservar), el ciclo
+       se repite.
+
+Por qué function calling nativo y no un patrón de texto:
+    Antes el agente le pedía a Gemini que escribiera "[TOOL: nombre](args)"
+    y parseaba ese texto con una expresión regular. Eso es frágil (el
+    modelo tiene que formatear exacto, el parser no cubre todos los casos)
+    y encima perdía datos entre turnos: el historial solo guardaba el
+    texto redactado, así que el horario_id se "olvidaba" y hacía falta un
+    parche. Con function calling nativo el SDK entrega los argumentos ya
+    parseados, y el historial conserva las llamadas y respuestas de tools,
+    así que el modelo recuerda el horario_id solo.
 
 Ciclo de vida de MCP:
-    La sesión MCP se abre y se cierra DENTRO de cada turno (ver ClienteMCP).
-    Antes se intentaba mantenerla viva entre turnos, pero eso choca con que
-    cada llamada síncrona abre su propio event loop con asyncio.run(): los
-    canales de anyio quedan atados al loop donde nacieron y el segundo turno
-    fallaba con ClosedResourceError. Abrir/cerrar por turno lo resuelve.
+    La sesión MCP se abre y se cierra DENTRO de cada turno (ver ClienteMCP),
+    y solo si Gemini realmente pide una tool. Un saludo no toca la base.
 """
 
 import asyncio
-import json
 import os
-import re
 from datetime import datetime
 
 from google import genai
@@ -34,8 +43,12 @@ from app.agente.cliente_mcp import ClienteMCP
 class AgenteReservaciones:
     """Agente que entiende consultas y ejecuta acciones a través de MCP."""
 
+    # Tope de vueltas del ciclo de tools en un mismo turno. Evita que un
+    # modelo confundido quede pidiendo tools para siempre (y gastando cuota).
+    MAX_ITERACIONES_TOOLS = 6
+
     def __init__(self):
-        """Inicializa el cliente de Gemini. La sesión MCP se abre por turno."""
+        """Inicializa el cliente de Gemini y las declaraciones de tools."""
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY no configurada en .env")
@@ -57,16 +70,19 @@ class AgenteReservaciones:
             )
         ]
 
-        # Historial de la conversación (texto en lenguaje natural).
-        self.historial = []
+        # Declaraciones de las tools en formato Gemini. Se arman una vez.
+        self._tools = self._declarar_tools()
 
-        # Contexto operativo: guarda el resultado CRUDO de la última vez que
-        # se ejecutó cada tool en esta conversación. Existe porque el
-        # historial solo guarda el texto ya redactado, y ese texto no
-        # contiene datos estructurados como horario_id. Sin esto, el agente
-        # "olvida" el horario_id apenas Gemini redacta la respuesta bonita, y
-        # re-consulta disponibilidad en loop en vez de avanzar a reservar.
-        self.contexto_tools: dict = {}
+        # Historial de la conversación como objetos Content de Gemini. A
+        # diferencia del enfoque anterior, incluye los turnos de function
+        # call y function response, así que el modelo conserva datos
+        # estructurados (como horario_id) entre un turno y el siguiente.
+        self.historial: list[types.Content] = []
+
+        # Tokens que consumió el ÚLTIMO turno (sumando todas las llamadas a
+        # Gemini de ese turno). Lo usa la evaluación para medir costo y sirve
+        # de base para el logging de la Fase 6. Se reinicia en cada `responder`.
+        self.ultimo_uso = {"tokens_entrada": 0, "tokens_salida": 0, "tokens_total": 0}
 
     # --- API pública ---
 
@@ -74,9 +90,9 @@ class AgenteReservaciones:
         """
         Procesa una pregunta y devuelve la respuesta (interfaz síncrona).
 
-        Internamente corre `responder` en su propio event loop. Usar esta
-        variante desde código síncrono (una CLI, un script). Desde código
-        async (FastAPI) usar `responder` directamente con await.
+        Corre `responder` en su propio event loop. Usar esta variante desde
+        código síncrono (una CLI, un script). Desde código async (FastAPI)
+        usar `responder` directamente con await.
         """
         return asyncio.run(self.responder(pregunta_usuario))
 
@@ -84,248 +100,287 @@ class AgenteReservaciones:
         """
         Procesa una pregunta de forma asincrónica y devuelve la respuesta.
 
-        Abre una sesión MCP para este turno, ejecuta las tools que Gemini
-        pida, y la cierra al terminar (ver ClienteMCP para el porqué).
+        Le pasa a Gemini el historial + las tools. Si Gemini pide tools,
+        abre una sesión MCP para este turno, las ejecuta (encadenando si
+        hace falta), y devuelve la redacción final. La sesión MCP se cierra
+        al terminar (ver ClienteMCP para el porqué).
         """
-        self.historial.append({"role": "user", "content": pregunta_usuario})
+        self.ultimo_uso = {"tokens_entrada": 0, "tokens_salida": 0, "tokens_total": 0}
 
-        prompt_sistema = self._construir_prompt_sistema()
+        self.historial.append(
+            types.Content(role="user", parts=[types.Part(text=pregunta_usuario)])
+        )
+
+        config = types.GenerateContentConfig(
+            tools=self._tools,
+            system_instruction=self._prompt_sistema(),
+            safety_settings=self.safety_settings,
+        )
 
         respuesta = self.client.models.generate_content(
-            model=self.modelo,
-            contents=[{"role": "user", "parts": [{"text": prompt_sistema}]}]
-            + self._convertir_historial_para_gemini(),
-            config=types.GenerateContentConfig(safety_settings=self.safety_settings),
+            model=self.modelo, contents=self.historial, config=config
         )
-        texto_gemini = respuesta.text
+        self._acumular_uso(respuesta)
 
-        # Solo se abre el servidor MCP si Gemini realmente pidió una tool. Un
-        # saludo o una repregunta ("¿me das tu teléfono?") no necesitan tocar
-        # la base, así que no pagamos el arranque del subproceso.
-        if "[TOOL:" in texto_gemini:
-            async with ClienteMCP() as cli:
-                resultado_final = await self._procesar_respuesta_gemini(
-                    texto_gemini, cli, pregunta_original=pregunta_usuario
+        # Sin tools: el modelo respondió directo (saludo, repregunta, etc.).
+        # No se abre MCP.
+        if not respuesta.function_calls:
+            return self._cerrar_turno(respuesta)
+
+        # Con tools: se abre MCP y se corre el ciclo llamar → ejecutar →
+        # devolver resultado → repetir, hasta que el modelo redacte sin
+        # pedir más tools (o hasta el tope de iteraciones).
+        async with ClienteMCP() as cli:
+            iteraciones = 0
+            while respuesta.function_calls and iteraciones < self.MAX_ITERACIONES_TOOLS:
+                iteraciones += 1
+
+                # Guardar el turno del modelo (los function_call) en el historial.
+                contenido_modelo = self._contenido(respuesta)
+                if contenido_modelo is not None:
+                    self.historial.append(contenido_modelo)
+
+                # Ejecutar cada tool pedida y juntar sus resultados. Gemini
+                # puede pedir varias tools de una; se responden todas juntas.
+                partes_resultado = []
+                for fc in respuesta.function_calls:
+                    resultado = await self._ejecutar_tool(cli, fc)
+                    partes_resultado.append(
+                        types.Part.from_function_response(
+                            name=fc.name, response=resultado
+                        )
+                    )
+                self.historial.append(
+                    types.Content(role="user", parts=partes_resultado)
                 )
-        else:
-            resultado_final = texto_gemini
 
-        self.historial.append({"role": "assistant", "content": resultado_final})
-        return resultado_final
+                respuesta = self.client.models.generate_content(
+                    model=self.modelo, contents=self.historial, config=config
+                )
+                self._acumular_uso(respuesta)
+
+        return self._cerrar_turno(respuesta)
 
     def cerrar(self) -> None:
         """
         Hook de fin de conversación.
 
         Hoy no hace falta cerrar nada: la sesión MCP se abre y se cierra
-        dentro de cada turno (ver `responder`), no queda nada vivo entre
-        preguntas. Se mantiene el método porque las CLIs lo llaman al salir
-        y porque es el lugar natural para cualquier limpieza futura.
+        dentro de cada turno (ver `responder`). Se mantiene el método porque
+        las CLIs lo llaman al salir y es el lugar natural para limpieza futura.
         """
         return None
 
-    # --- Construcción del prompt ---
+    # --- Internos ---
 
-    def _construir_prompt_sistema(self) -> str:
-        """Define qué es el agente, sus tools, y cómo pedir una ejecución."""
-        hoy = datetime.now().strftime("%Y-%m-%d")
-
-        return f"""Eres un agente de IA para un negocio de reservaciones. Hoy es {hoy}.
-
-Tu trabajo es ayudar a los clientes con preguntas, consultar disponibilidad, crear reservaciones,
-y escalar casos a un humano cuando sea necesario.
-
-**Tienes estas tools disponibles:**
-
-1. **buscar_conocimiento** - Busca información en la base de conocimiento del negocio
-   (políticas, horarios, métodos de pago, ubicación, etc.)
-   Args: consulta (string, requerido, el texto de búsqueda), top_k (entero, opcional, default 3)
-   Úsala para preguntas sobre el negocio que no sean sobre disponibilidad o reservaciones.
-
-2. **consultar_disponibilidad** - Consulta horarios libres en una fecha específica
-   Args: fecha (YYYY-MM-DD requerida), servicio (opcional, ej. "corte", "manicura")
-   Úsala cuando el usuario pregunte si hay espacio, cupo o disponibilidad.
-
-3. **crear_reservacion** - Agenda una cita en un horario disponible
-   Args: horario_id (obtenido de consultar_disponibilidad), nombre_cliente, telefono (opt), email (opt)
-   IMPORTANTE: antes de crear_reservacion, SIEMPRE llama consultar_disponibilidad para obtener el horario_id.
-   Nunca inventes un horario_id.
-
-4. **escalar_caso** - Registra un caso para que lo atienda una persona del negocio
-   Args: motivo (descripción del problema), nombre_cliente, telefono (recomendado), email (opt)
-   Úsala para reclamos, excepciones a políticas, o cuando el usuario pida hablar con alguien.
-
-**Cómo ejecutar tools:**
-Cuando decidas que necesitas ejecutar una tool, escribe el comando en este formato exacto:
-[TOOL: nombre_tool] (arg1="valor1", arg2=valor2, ...)
-
-Ejemplo 1:
-[TOOL: buscar_conocimiento] (consulta="horario de atención")
-
-Ejemplo 2:
-[TOOL: consultar_disponibilidad] (fecha="2026-07-25", servicio="corte")
-
-Ejemplo 3:
-[TOOL: crear_reservacion] (horario_id=5, nombre_cliente="Juan Pérez", telefono="555-1234")
-
-**Instrucciones importantes:**
-- Siempre responde en español, con tono amable y profesional.
-- Si no encuentras la información solicitada después de usar las tools, explícale al usuario
-  que no está disponible y ofrece alternativas.
-- No hagas suposiciones: si necesitas fechas o datos específicos y el usuario no los dio, pídeselos.
-- Cuando presentes resultados de tools, hazlo en un lenguaje natural y claro, no devuelvas JSON.
-- Mantén el contexto de la conversación: si el usuario ya dio su nombre, úsalo.
-
-**Hoy es {hoy}. Recuerda esto al interpretar fechas relativas (mañana, pasado mañana, etc.).**
-{self._construir_contexto_operativo()}
-Ahora, ayuda al usuario con su pregunta."""
-
-    def _construir_contexto_operativo(self) -> str:
+    def _cerrar_turno(self, respuesta) -> str:
         """
-        Inserta en el prompt los resultados crudos de las tools ya ejecutadas
-        en esta conversación, para que Gemini tenga acceso a datos como
-        horario_id que el historial en lenguaje natural no conserva.
+        Cierra un turno: guarda el turno final del modelo en el historial y
+        devuelve el texto para el usuario.
+
+        Si el modelo se quedó pidiendo tools tras el tope de iteraciones, o
+        la respuesta no trae texto, devuelve un mensaje de cortesía en vez
+        de un texto vacío.
         """
-        if not self.contexto_tools:
-            return ""
-
-        bloque = json.dumps(self.contexto_tools, ensure_ascii=False, indent=2)
-        return f"""
-
-**Datos ya consultados en esta conversación (contexto interno, NO se lo muestres
-al usuario en crudo):**
-{bloque}
-
-Usa estos datos si ya tienen lo que necesitas — por ejemplo, si el usuario ya
-eligió un horario que vos ya listaste, el horario_id está en
-"consultar_disponibilidad" -> "resultado" -> "disponibles". NO vuelvas a llamar
-consultar_disponibilidad solo para "recuperar" un horario_id que ya tenés acá;
-usalo directamente en crear_reservacion.
-"""
-
-    # --- Ejecución de tools ---
-
-    async def _procesar_respuesta_gemini(
-        self, texto_gemini: str, cli: ClienteMCP, pregunta_original: str = ""
-    ) -> str:
-        """
-        Busca patrones [TOOL: ...] en la respuesta de Gemini, ejecuta las
-        tools contra `cli`, y reemplaza cada comando por su resultado.
-
-        Args:
-            texto_gemini: texto devuelto por Gemini.
-            cli: sesión MCP abierta para este turno.
-            pregunta_original: la pregunta tal como la escribió el usuario,
-                para que la segunda llamada a Gemini (la que redacta) sepa
-                qué se preguntó y no muestre de más.
-        """
-        resultado = texto_gemini
-        patron = r"\[TOOL: (\w+)\]\s*\((.*?)\)"
-        matches = list(re.finditer(patron, resultado))
-
-        # De atrás para adelante, para no desalinear las posiciones al
-        # reemplazar cada comando por un texto de largo distinto.
-        for match in reversed(matches):
-            nombre_tool = match.group(1)
-            args_str = match.group(2)
-
-            try:
-                args = self._parsear_argumentos(args_str)
-                resultado_tool = await cli.ejecutar_tool(nombre_tool, **args)
-
-                # Guardar para turnos futuros (ver contexto_tools en __init__).
-                self.contexto_tools[nombre_tool] = {
-                    "args": args,
-                    "resultado": resultado_tool,
-                }
-
-                resultado_json = json.dumps(resultado_tool, ensure_ascii=False, indent=2)
-                reemplazo = (
-                    f"[Resultado de {nombre_tool}]:\n{resultado_json}\n[Fin resultado]"
-                )
-            except Exception as e:
-                reemplazo = f"Error al ejecutar {nombre_tool}: {e}"
-
-            resultado = resultado[: match.start()] + reemplazo + resultado[match.end() :]
-
-        # Si se ejecutó alguna tool, una segunda llamada a Gemini redacta la
-        # respuesta final a partir de los resultados.
-        if "[Resultado de" in resultado:
-            resultado = await self._gemini_procesar_resultados(
-                resultado, pregunta_original
+        if respuesta.function_calls:
+            # Llegó al tope todavía pidiendo tools: no hay una respuesta
+            # redactada que darle al usuario.
+            return (
+                "Disculpá, no pude completar la operación en este momento. "
+                "¿Podés intentarlo de nuevo?"
             )
 
-        return resultado
+        contenido = self._contenido(respuesta)
+        if contenido is not None:
+            self.historial.append(contenido)
 
-    def _parsear_argumentos(self, args_str: str) -> dict:
+        texto = getattr(respuesta, "text", None)
+        return texto or "Disculpá, no tengo una respuesta para eso ahora mismo."
+
+    async def _ejecutar_tool(self, cli: ClienteMCP, function_call) -> dict:
         """
-        Parsea argumentos de la forma: arg1="valor", arg2=5, arg3=true
+        Ejecuta una tool pedida por Gemini y devuelve su resultado como dict.
 
-        Soporta strings entre comillas, enteros, floats (incluidos negativos)
-        y booleanos. Es deliberadamente conservador: si un valor no encaja en
-        esos tipos, no se incluye (mejor omitir que pasar basura a la tool).
+        Si la ejecución falla (por ejemplo, el servidor MCP no responde), se
+        devuelve el error como dato — así el modelo lo recibe como resultado
+        de la tool y puede recuperarse (ofrecer otra cosa, disculparse), en
+        vez de que el turno explote.
         """
-        args = {}
-        patron = r'(\w+)\s*=\s*("[^"]*"|-?\d+\.\d+|-?\d+|true|false)'
+        try:
+            argumentos = dict(function_call.args) if function_call.args else {}
+            return await cli.ejecutar_tool(function_call.name, **argumentos)
+        except Exception as e:
+            return {"error": f"No se pudo ejecutar {function_call.name}: {e}"}
 
-        for match in re.finditer(patron, args_str):
-            clave = match.group(1)
-            valor = match.group(2)
+    def _acumular_uso(self, respuesta) -> None:
+        """Suma los tokens de una respuesta de Gemini al contador del turno."""
+        uso = getattr(respuesta, "usage_metadata", None)
+        if uso is None:
+            return
+        self.ultimo_uso["tokens_entrada"] += uso.prompt_token_count or 0
+        self.ultimo_uso["tokens_salida"] += uso.candidates_token_count or 0
+        self.ultimo_uso["tokens_total"] += uso.total_token_count or 0
 
-            if valor.startswith('"'):
-                valor = valor.strip('"')
-            elif valor == "true":
-                valor = True
-            elif valor == "false":
-                valor = False
-            elif "." in valor:
-                valor = float(valor)
-            else:
-                valor = int(valor)
+    @staticmethod
+    def _contenido(respuesta):
+        """Devuelve candidates[0].content de forma segura, o None si no hay."""
+        candidatos = getattr(respuesta, "candidates", None)
+        if candidatos:
+            return candidatos[0].content
+        return None
 
-            args[clave] = valor
+    def _declarar_tools(self) -> list[types.Tool]:
+        """
+        Declara las 4 tools del negocio en formato Gemini.
 
-        return args
+        Los esquemas son deliberadamente simples (solo string/integer, y los
+        opcionales se marcan omitiéndolos de `required`): el function calling
+        de Gemini es más estricto que JSON Schema y rechaza construcciones
+        como `anyOf` o `null`. Las descripciones son lo que Gemini lee para
+        decidir qué tool usar, así que están escritas para el modelo.
+        """
+        declaraciones = [
+            types.FunctionDeclaration(
+                name="buscar_conocimiento",
+                description=(
+                    "Busca información en la base de conocimiento del negocio: "
+                    "políticas, horarios de atención, métodos de pago, ubicación "
+                    "y demás información general documentada. Úsala para preguntas "
+                    "sobre el negocio que NO sean de disponibilidad ni de reservar."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "consulta": {
+                            "type": "string",
+                            "description": "La pregunta del usuario, en lenguaje natural.",
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Cuántos fragmentos relevantes traer (por defecto 3).",
+                        },
+                    },
+                    "required": ["consulta"],
+                },
+            ),
+            types.FunctionDeclaration(
+                name="consultar_disponibilidad",
+                description=(
+                    "Consulta qué horarios están libres para reservar en una fecha. "
+                    "Úsala cuando el usuario pregunte si hay campo, cupo o espacio, o "
+                    "antes de reservar para confirmar la disponibilidad. Devuelve el "
+                    "horario_id de cada espacio libre, necesario para crear la reserva."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "fecha": {
+                            "type": "string",
+                            "description": "Fecha a consultar en formato YYYY-MM-DD (ej. 2026-08-01).",
+                        },
+                        "servicio": {
+                            "type": "string",
+                            "description": "Nombre del servicio a filtrar (ej. 'corte'). Opcional; "
+                            "acepta coincidencia parcial.",
+                        },
+                    },
+                    "required": ["fecha"],
+                },
+            ),
+            types.FunctionDeclaration(
+                name="crear_reservacion",
+                description=(
+                    "Agenda una reservación en un horario disponible. Úsala cuando el "
+                    "usuario confirme que quiere reservar. Necesitás el horario_id, que "
+                    "da consultar_disponibilidad: nunca lo inventes ni asumas que un "
+                    "horario sigue libre, esta tool lo verifica y avisa si ya se ocupó."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "horario_id": {
+                            "type": "integer",
+                            "description": "Id del horario a reservar, tal como lo devolvió "
+                            "consultar_disponibilidad.",
+                        },
+                        "nombre_cliente": {
+                            "type": "string",
+                            "description": "Nombre de la persona que reserva.",
+                        },
+                        "telefono": {
+                            "type": "string",
+                            "description": "Teléfono del cliente (opcional pero recomendado).",
+                        },
+                        "email": {
+                            "type": "string",
+                            "description": "Correo del cliente (opcional).",
+                        },
+                    },
+                    "required": ["horario_id", "nombre_cliente"],
+                },
+            ),
+            types.FunctionDeclaration(
+                name="escalar_caso",
+                description=(
+                    "Registra un caso para que lo atienda una persona del negocio. Úsala "
+                    "para reclamos, pedidos de excepción a las políticas, algo que la base "
+                    "de conocimiento no cubre, o cuando el usuario pida hablar con alguien. "
+                    "No la uses para preguntas que buscar_conocimiento puede responder ni "
+                    "para reservar."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "motivo": {
+                            "type": "string",
+                            "description": "Qué necesita el usuario y por qué no se pudo "
+                            "resolver, con detalle suficiente para quien lo atienda después.",
+                        },
+                        "nombre_cliente": {
+                            "type": "string",
+                            "description": "Nombre de la persona.",
+                        },
+                        "telefono": {
+                            "type": "string",
+                            "description": "Teléfono de contacto (pedilo si no lo tenés).",
+                        },
+                        "email": {
+                            "type": "string",
+                            "description": "Correo de contacto (opcional).",
+                        },
+                    },
+                    "required": ["motivo", "nombre_cliente"],
+                },
+            ),
+        ]
+        return [types.Tool(function_declarations=declaraciones)]
 
-    async def _gemini_procesar_resultados(
-        self, texto_con_resultados: str, pregunta_original: str = ""
-    ) -> str:
-        """Segunda llamada a Gemini: redacta la respuesta final para el usuario."""
-        prompt = f"""El usuario preguntó exactamente esto:
+    def _prompt_sistema(self) -> str:
+        """
+        Instrucción de sistema: define el rol, las reglas de negocio y el
+        estilo de respuesta. Ya NO le dice a Gemini cómo formatear las
+        llamadas a tools — de eso se encarga el function calling nativo.
+        """
+        hoy = datetime.now().strftime("%Y-%m-%d")
+        return f"""Sos un asistente de un negocio de reservaciones (un salón). Hoy es {hoy}.
 
-"{pregunta_original}"
+Ayudás a los clientes a resolver dudas del negocio, consultar disponibilidad, agendar
+citas y escalar casos a una persona cuando hace falta. Tenés tools para eso; usalas
+cuando corresponda en vez de inventar información.
 
-Para responderle, se consultaron una o más fuentes de información (tools). Aquí
-está el resultado crudo de esas consultas — puede incluir más información de
-la que el usuario pidió, porque el buscador (RAG) devuelve varios fragmentos
-relacionados aunque solo uno sea relevante:
+Reglas de negocio:
+- Antes de crear una reservación SIEMPRE tenés que tener un horario_id real que haya
+  devuelto consultar_disponibilidad. Nunca lo inventes.
+- Si te falta un dato para hacer algo (una fecha, el nombre, el teléfono), pedíselo al
+  usuario en vez de suponerlo.
+- Interpretá las fechas relativas ("mañana", "el jueves") tomando como referencia que
+  hoy es {hoy}.
 
-{texto_con_resultados}
-
-Instrucciones para tu respuesta:
-- Respondé ÚNICAMENTE lo que el usuario preguntó. No agregues información
-  adicional de los resultados que no fue solicitada, aunque esté disponible.
-- Ejemplo: si preguntó solo por el horario de atención, respondé solo el
-  horario. No menciones política de cancelación, métodos de pago, ni
-  ubicación a menos que también los haya preguntado.
-- Sé breve y directo. Un par de líneas suele ser suficiente, no un listado
-  con secciones y encabezados.
-- No incluyas JSON ni comandos [TOOL] en tu respuesta.
-- Si algún resultado fue un error, comunícalo de forma amable y ofrecé
-  alternativas.
-- Al final, podés ofrecer ayudar con algo más, pero sin adelantar información
-  que no se pidió."""
-
-        respuesta = self.client.models.generate_content(
-            model=self.modelo,
-            contents=prompt,
-        )
-        return respuesta.text
-
-    def _convertir_historial_para_gemini(self) -> list:
-        """Convierte el historial interno al formato de contenidos de Gemini."""
-        mensajes = []
-        for msg in self.historial:
-            rol = "user" if msg["role"] == "user" else "model"
-            mensajes.append({"role": rol, "parts": [{"text": msg["content"]}]})
-        return mensajes
+Estilo:
+- Respondé siempre en español, con tono amable y profesional, y de forma breve.
+- Respondé solo lo que el usuario preguntó. Si una tool te devuelve más información de
+  la que se pidió (por ejemplo, el buscador trae varios fragmentos), usá solo lo
+  relevante; no vuelques todo.
+- No muestres JSON ni detalles internos: redactá en lenguaje natural.
+- Cuando escales un caso o crees una reserva, confirmáselo al usuario con los datos
+  relevantes (número de reserva o de ticket)."""
