@@ -55,7 +55,7 @@ un chunk)** y volver a medir.
 ### Etapa 2 — Selección de tools
 
 Dataset: 13 mensajes, cada uno con la tool esperada (o "ninguna").
-Corrido con `gemini-3.5-flash`.
+Números oficiales con **`gemini-3.6-flash`** (el más capaz).
 
 | Categoría | Acierto |
 |---|---|
@@ -67,8 +67,10 @@ Corrido con `gemini-3.5-flash`.
 
 **El hallazgo:** ante un reclamo "pelado" en un solo turno ("me cobraron
 de más", "quiero hablar con alguien"), el modelo NO elige `escalar_caso`
-— lo trata como pregunta o responde directo. Ver la nota importante más
-abajo, porque esto se matiza con el resultado end-to-end.
+— lo trata como pregunta o responde directo. **Se corrió también con
+`gemini-3.5-flash` y el resultado fue idéntico (escalar 0/3), así que NO
+es un problema de capacidad del modelo: es del prompt.** Ver la nota
+importante más abajo, porque esto se matiza con el resultado end-to-end.
 
 > `crear_reservacion` no está en este dataset a propósito: reservar es
 > multi-turno (primero hay que consultar disponibilidad para tener el
@@ -80,18 +82,26 @@ abajo, porque esto se matiza con el resultado end-to-end.
 
 Dataset: 4 conversaciones completas. La correctitud se verifica
 **consultando Postgres** (¿la reserva/ticket realmente se creó?), no
-confiando en lo que el agente dice. Corrido con `gemini-3.5-flash-lite`.
+confiando en lo que el agente dice.
 
-| Conversación | ok? | Latencia | Tokens | Costo |
-|---|---|---|---|---|
-| Consulta de conocimiento (RAG) | PASA | 7.7s | 2566 | $0.00028 |
-| Consulta de disponibilidad | PASA | 6.8s | 2314 | $0.00026 |
-| Reserva completa (multi-turno) | PASA | 15.0s | 5162 | $0.00057 |
-| Escalar un reclamo | PASA | 6.2s | 2331 | $0.00026 |
+Se corrió dos veces, y la comparación es reveladora:
 
-**Totales:** 4/4 correctos (100%) · latencia promedio **8.9s** · costo
-total **$0.00137** (≈ **$0.0003 por conversación**, o sea ~3.000
-conversaciones por dólar).
+| | `gemini-3.5-flash-lite` (ayer) | `gemini-3.5-flash` (oficial) |
+|---|---|---|
+| Correctitud | 4/4 (100%) | 4/4 (100%) |
+| Latencia promedio | 8.9s | **45.3s** ⚠️ |
+| Tokens totales | 12.373 | 14.386 |
+| Costo total | $0.00137 | $0.00149 |
+
+**Costo:** ≈ **$0.0003 por conversación** (~3.000 conversaciones por dólar).
+El costo y los tokens son confiables en ambas corridas.
+
+**La latencia NO es confiable en la capa gratuita.** Los 45s de la segunda
+corrida no son latencia real del modelo: son los **reintentos por rate
+limit** (429/503). Cuando una llamada choca con el límite, el SDK espera
+20-60s y reintenta, y esa espera cae dentro del cronómetro. La latencia
+real ronda los **~9s** (la primera corrida, con menos contención). Para
+medir latencia limpia hace falta capa paga.
 
 ---
 

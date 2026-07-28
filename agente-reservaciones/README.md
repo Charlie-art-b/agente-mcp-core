@@ -300,10 +300,63 @@ Edítalo para ajustar el comportamiento a tu caso de uso.
 - [x] Fase 3 — Servidor MCP: las 4 tools expuestas vía protocolo, con
       tests de la lógica y de la capa de protocolo (61 en total)
 - [x] Fase 4 — Agente (Gemini + MCP), con API HTTP e interfaz web de chat
-- [ ] Fase 5 — Evaluación
+- [x] Fase 5 — Evaluación: harness con tres métricas (recuperación del RAG,
+      selección de tools, y end-to-end con correctitud/latencia/costo).
+      Ver `FASE_5_EVALUACION.md` y `app/eval/`.
 - [ ] Fase 6 — Logging y observabilidad
 - [ ] Fase 7 — Demo y presentación
 
 ## Resultados de evaluación
 
-_Se completa en la Fase 5, con números reales de precisión, costo y latencia._
+Números medidos con el harness de la Fase 5 (`python -m app.eval.evaluar_*`).
+Detalle completo, hallazgos y advertencias en
+[`FASE_5_EVALUACION.md`](FASE_5_EVALUACION.md).
+
+### Recuperación del RAG (búsqueda semántica)
+
+Sobre 12 preguntas, la mitad parafraseadas sin palabras en común con la
+respuesta (para medir significado, no coincidencia de texto).
+
+| Métrica | Valor |
+|---|---|
+| recall@1 | 50% |
+| recall@3 | 100% |
+| MRR | 0.708 |
+| Casos difíciles (semánticos) | 6/6 |
+
+### Selección de tools (`gemini-3.6-flash`)
+
+¿El agente elige la tool correcta para cada mensaje?
+
+| Categoría | Acierto |
+|---|---|
+| Preguntas del negocio (`buscar_conocimiento`) | 4/4 |
+| Disponibilidad (`consultar_disponibilidad`) | 3/3 |
+| Sin tool (responder directo) | 3/3 |
+| Escalar (`escalar_caso`) | 0/3 |
+| **Global** | **77% (10/13)** |
+
+### End-to-end (`gemini-3.5-flash`)
+
+Conversaciones completas, verificando en Postgres que la acción realmente
+ocurrió (no que el agente diga que sí).
+
+| Métrica | Valor |
+|---|---|
+| Correctitud | 100% (4/4) |
+| Costo por conversación | ~$0.0003 (≈ 3.000 por dólar) |
+| Tokens (4 conversaciones) | ~14.400 |
+
+### Hallazgos
+
+- **`escalar_caso` no dispara ante reclamos "pelados"** (0/3), y sigue en 0%
+  incluso con el modelo más capaz — o sea, es un tema de prompt, no de
+  modelo. En una conversación real con datos de contacto SÍ escala (el
+  end-to-end lo confirma). Mejora pendiente: reforzar la descripción de la
+  tool y el prompt del sistema.
+- **La latencia no se puede medir limpia en la capa gratuita:** los
+  reintentos por rate limit (429/503) inflan los tiempos. En condiciones sin
+  contención ronda los ~9s por conversación; para números confiables hace
+  falta capa paga.
+- El costo mostrado es una estimación a partir de los tokens (exactos) y una
+  tarifa de referencia; verificá el precio actual en la doc de Gemini.
