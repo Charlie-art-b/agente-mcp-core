@@ -179,7 +179,7 @@ with st.sidebar:
     st.markdown(
         f'<div style="font-family:Georgia, \'Times New Roman\', serif; '
         f'font-size:22px; color:{COLOR_TEXTO};">Reservaciones</div>'
-        + etiqueta("Demo del agente · Fase 4", margen="4px 0 0 0"),
+        + etiqueta("Asistente virtual", margen="4px 0 0 0"),
         unsafe_allow_html=True,
     )
 
@@ -217,11 +217,6 @@ with st.sidebar:
         reiniciar_conversacion()
         st.rerun()
 
-    st.caption("Gemini · MCP · PostgreSQL · Chroma")
-    st.caption(
-        "Demo de un solo usuario: todas las pestañas comparten la misma conversación."
-    )
-
 
 # --- Encabezado ---
 
@@ -234,8 +229,7 @@ st.markdown(
             Agente de Reservaciones
         </div>
         <div style="font-size:13px; color:{COLOR_TENUE}; margin-top:6px;">
-            Disponibilidad &middot; Reservas &middot; Consultas
-        </div>
+               </div>
     </div>
     <hr style="border:none; border-top:1px solid {COLOR_BORDE}; margin:18px 0 22px 0;">
     """,

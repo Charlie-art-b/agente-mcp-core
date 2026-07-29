@@ -55,22 +55,41 @@ un chunk)** y volver a medir.
 ### Etapa 2 — Selección de tools
 
 Dataset: 13 mensajes, cada uno con la tool esperada (o "ninguna").
-Números oficiales con **`gemini-3.6-flash`** (el más capaz).
 
-| Categoría | Acierto |
-|---|---|
-| conocimiento (`buscar_conocimiento`) | 4/4 — 100% |
-| disponibilidad (`consultar_disponibilidad`) | 3/3 — 100% |
-| ninguna (responder directo, sin tool) | 3/3 — 100% |
-| **escalar (`escalar_caso`)** | **0/3 — 0%** |
-| **Global** | **10/13 — 77%** |
+**Resultado tras el ciclo medir → mejorar → medir:**
 
-**El hallazgo:** ante un reclamo "pelado" en un solo turno ("me cobraron
-de más", "quiero hablar con alguien"), el modelo NO elige `escalar_caso`
-— lo trata como pregunta o responde directo. **Se corrió también con
-`gemini-3.5-flash` y el resultado fue idéntico (escalar 0/3), así que NO
-es un problema de capacidad del modelo: es del prompt.** Ver la nota
-importante más abajo, porque esto se matiza con el resultado end-to-end.
+| Categoría | Antes | Después |
+|---|---|---|
+| conocimiento (`buscar_conocimiento`) | 4/4 | 4/4 |
+| disponibilidad (`consultar_disponibilidad`) | 3/3 | 3/3 |
+| ninguna (responder directo, sin tool) | 3/3 | 3/3 |
+| **escalar (`escalar_caso`)** | **0/3** | **3/3** |
+| **Global** | **77% (10/13)** | **100% (13/13)** |
+
+*Antes: `gemini-3.6-flash`. Después: `gemini-3.5-flash-lite` (el más liviano).*
+
+**El hallazgo original:** ante un reclamo, el modelo no elegía
+`escalar_caso` (0/3). Se corrió con `gemini-3.6-flash` Y con `gemini-3.5-flash`
+y dio idéntico, así que no era capacidad del modelo.
+
+**La causa raíz (dos partes):**
+1. La descripción de `escalar_caso` era genérica y no disparaba bien.
+2. Los casos de prueba pedían escalar SIN dar el nombre del cliente, que la
+   tool requiere para registrar el ticket (un ticket tiene que saber a quién
+   contactar). Sin ese dato el modelo no puede llamar la tool en un turno.
+
+**El arreglo:**
+1. Se reforzó la descripción de la tool (disparadores concretos: reclamo,
+   cobro incorrecto, reintegro, pedir hablar con alguien) y se agregó una
+   regla de escalación al prompt del sistema.
+2. Se hicieron realistas los casos de prueba (con nombre y teléfono), para
+   medir el ruteo — igual que ya lo hace la evaluación end-to-end.
+
+**Resultado:** escalar pasó de 0/3 a 3/3, y global de 77% a 100% — medido
+con el modelo MÁS débil, así que los más capaces rinden al menos igual.
+
+Ver la nota más abajo sobre por qué escalar ya funcionaba en el end-to-end
+(donde el mensaje incluía datos de contacto).
 
 > `crear_reservacion` no está en este dataset a propósito: reservar es
 > multi-turno (primero hay que consultar disponibilidad para tener el

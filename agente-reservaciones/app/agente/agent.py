@@ -347,11 +347,16 @@ class AgenteReservaciones:
             types.FunctionDeclaration(
                 name="escalar_caso",
                 description=(
-                    "Registra un caso para que lo atienda una persona del negocio. Úsala "
-                    "para reclamos, pedidos de excepción a las políticas, algo que la base "
-                    "de conocimiento no cubre, o cuando el usuario pida hablar con alguien. "
-                    "No la uses para preguntas que buscar_conocimiento puede responder ni "
-                    "para reservar."
+                    "Registra un caso para que una persona del negocio lo atienda. LLAMÁ "
+                    "esta tool apenas el usuario exprese un reclamo o una queja, reporte un "
+                    "cobro incorrecto o pida un reintegro, se muestre insatisfecho con el "
+                    "servicio, o pida hablar con una persona, humano o encargado. Es la vía "
+                    "para todo lo que no resuelven las otras tools: NO trates un reclamo "
+                    "como una consulta de información ni intentes resolverlo vos. Para "
+                    "registrar el caso necesitás el nombre real del cliente: si todavía no "
+                    "te lo dio, pedíselo PRIMERO (no inventes un nombre) y llamá esta tool "
+                    "UNA sola vez, cuando ya lo tengas. No la uses para preguntas del "
+                    "negocio (esas van a buscar_conocimiento) ni para reservar."
                 ),
                 parameters={
                     "type": "object",
@@ -396,6 +401,12 @@ cuando corresponda en vez de inventar información.
 Reglas de negocio:
 - Antes de crear una reservación SIEMPRE tenés que tener un horario_id real que haya
   devuelto consultar_disponibilidad. Nunca lo inventes.
+- Si el usuario expresa un reclamo, una queja, un problema con un cobro, insatisfacción,
+  o pide hablar con una persona, tu objetivo es registrar el caso con escalar_caso —
+  no lo trates como una consulta ni intentes resolverlo vos. Pero registralo UNA SOLA
+  VEZ, y solo cuando YA TENGAS el nombre del cliente. Si todavía no te lo dio, pedíselo
+  PRIMERO y NO llames a escalar_caso hasta tenerlo. Nunca inventes un nombre, y nunca
+  registres el mismo caso dos veces.
 - Si te falta un dato para hacer algo (una fecha, el nombre, el teléfono), pedíselo al
   usuario en vez de suponerlo.
 - Interpretá las fechas relativas ("mañana", "el jueves") tomando como referencia que

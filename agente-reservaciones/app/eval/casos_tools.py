@@ -59,18 +59,25 @@ CASOS = [
         "categoria": "disponibilidad",
     },
     # --- Reclamos / hablar con humano → escalar_caso ---
+    #
+    # Estos casos incluyen el nombre y el teléfono a propósito: escalar_caso
+    # requiere el nombre del cliente para registrar el caso (un ticket tiene
+    # que saber a quién contactar). Sin ese dato, el modelo NO PUEDE llamar
+    # la tool en un solo turno — pediría los datos primero. Con los datos,
+    # medimos lo que queremos: el ruteo (¿elige escalar_caso cuando puede?),
+    # igual que en la evaluación end-to-end.
     {
-        "mensaje": "Quiero hablar con una persona del equipo",
+        "mensaje": "Quiero hablar con una persona del equipo. Soy Ana Solís, mi teléfono es 8888-4001",
         "tool_esperada": "escalar_caso",
         "categoria": "escalar",
     },
     {
-        "mensaje": "Me cobraron de más el mes pasado y quiero un reintegro",
+        "mensaje": "Me cobraron de más el mes pasado y quiero un reintegro. Soy Marco Díaz, teléfono 8888-4002",
         "tool_esperada": "escalar_caso",
         "categoria": "escalar",
     },
     {
-        "mensaje": "Tengo una queja sobre la atención que recibí ayer",
+        "mensaje": "Tengo una queja sobre la atención que recibí ayer. Soy Carla Vega, 8888-4003",
         "tool_esperada": "escalar_caso",
         "categoria": "escalar",
     },

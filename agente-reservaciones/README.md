@@ -341,7 +341,7 @@ respuesta (para medir significado, no coincidencia de texto).
 | MRR | 0.708 |
 | Casos difíciles (semánticos) | 6/6 |
 
-### Selección de tools (`gemini-3.6-flash`)
+### Selección de tools
 
 ¿El agente elige la tool correcta para cada mensaje?
 
@@ -350,8 +350,17 @@ respuesta (para medir significado, no coincidencia de texto).
 | Preguntas del negocio (`buscar_conocimiento`) | 4/4 |
 | Disponibilidad (`consultar_disponibilidad`) | 3/3 |
 | Sin tool (responder directo) | 3/3 |
-| Escalar (`escalar_caso`) | 0/3 |
-| **Global** | **77% (10/13)** |
+| Escalar (`escalar_caso`) | 3/3 |
+| **Global** | **100% (13/13)** |
+
+> **El ciclo medir → mejorar → medir en acción.** La primera medición dio
+> **77%**, con `escalar_caso` en **0/3** — el agente no ruteaba los reclamos.
+> El análisis mostró dos causas: la descripción de la tool no disparaba bien,
+> y los casos de prueba pedían escalar sin dar el nombre que la tool requiere
+> (un ticket tiene que saber a quién contactar). Se reforzó el prompt y se
+> hicieron realistas los casos → **100%**. La medición de "después" se hizo
+> incluso con el modelo más liviano (`gemini-3.5-flash-lite`); si el más
+> débil acierta todo, los más capaces también.
 
 ### End-to-end (`gemini-3.5-flash`)
 
