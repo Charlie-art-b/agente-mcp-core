@@ -263,6 +263,20 @@ arrancar una conversación nueva.
 > Es una demo de un solo usuario: el agente vive como instancia única en
 > la API, así que dos pestañas abiertas comparten la misma conversación.
 
+**5. Panel de operación (métricas)**
+
+Un dashboard de Streamlit SEPARADO del chat: es la vista del dueño/equipo
+del negocio (interacciones, costo, latencia, uso por tool), no del cliente.
+Como el chat, no toca la base directo — consume la API (`GET /metricas`).
+
+```bash
+# Con la API ya corriendo (terminal 1 de arriba), en otra terminal:
+streamlit run app/dashboard.py --server.port 8502
+```
+
+Y se abre <http://localhost:8502>. Las métricas salen de lo que registra la
+Fase 6 en `interacciones_log`, así que aparecen a medida que se usa el chat.
+
 ### Cómo funciona el agente
 
 1. **Inicialización**: Conecta con Gemini API y lanza el servidor MCP en un subprocess
@@ -303,7 +317,10 @@ Edítalo para ajustar el comportamiento a tu caso de uso.
 - [x] Fase 5 — Evaluación: harness con tres métricas (recuperación del RAG,
       selección de tools, y end-to-end con correctitud/latencia/costo).
       Ver `FASE_5_EVALUACION.md` y `app/eval/`.
-- [ ] Fase 6 — Logging y observabilidad
+- [x] Fase 6 — Logging y observabilidad: cada interacción se registra en
+      `interacciones_log` (pregunta, tools con input/output, tokens, costo,
+      latencia), y un panel de operador aparte (`app/dashboard.py`) muestra
+      las métricas agregadas vía el endpoint `GET /metricas`.
 - [ ] Fase 7 — Demo y presentación
 
 ## Resultados de evaluación

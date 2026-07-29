@@ -20,6 +20,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.agente.agent import AgenteReservaciones
+from app.db.session import obtener_sesion
+from app.logging.metricas import calcular_metricas
+from app.logging.registro import registrar_interaccion
 
 # Crear la app FastAPI
 app = FastAPI(
@@ -135,6 +138,15 @@ async def consulta(request: ConsultaRequest):
         # síncrono acá reventaría ("asyncio.run() cannot be called from a
         # running event loop").
         respuesta = await agente.responder(request.pregunta)
+
+        # Registrar la interacción (Fase 6). Best-effort: si el logging falla
+        # —por ejemplo, la base no está disponible— no debe tumbar la
+        # respuesta que ya tenemos para el usuario.
+        try:
+            registrar_interaccion(agente.ultimo_registro)
+        except Exception as e:
+            print(f"[logging] no se pudo registrar la interacción: {e}")
+
         return ConsultaResponse(respuesta=respuesta, exitoso=True)
 
     except Exception as e:
@@ -163,6 +175,21 @@ async def chat(request: ConsultaRequest):
         JSON con la respuesta del agente
     """
     return await consulta(request)
+
+
+@app.get("/metricas", tags=["Observabilidad"])
+async def metricas():
+    """
+    Métricas agregadas de las interacciones registradas (Fase 6).
+
+    Es una vista de OPERADOR (dueño/equipo del negocio), no del cliente: la
+    consume el panel en app/dashboard.py, separado del chat.
+    """
+    sesion = obtener_sesion()
+    try:
+        return calcular_metricas(sesion)
+    finally:
+        sesion.close()
 
 
 @app.post("/reiniciar", tags=["Agente"])

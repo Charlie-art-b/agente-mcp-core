@@ -32,6 +32,7 @@ Ciclo de vida de MCP:
 
 import asyncio
 import os
+import time
 from datetime import datetime
 
 from google import genai
@@ -81,8 +82,15 @@ class AgenteReservaciones:
 
         # Tokens que consumió el ÚLTIMO turno (sumando todas las llamadas a
         # Gemini de ese turno). Lo usa la evaluación para medir costo y sirve
-        # de base para el logging de la Fase 6. Se reinicia en cada `responder`.
+        # de base para el logging. Se reinicia en cada `responder`.
         self.ultimo_uso = {"tokens_entrada": 0, "tokens_salida": 0, "tokens_total": 0}
+
+        # Registro completo del ÚLTIMO turno, para el logging (Fase 6): la
+        # pregunta, las tools ejecutadas (con su input y output), la respuesta,
+        # los tokens y la latencia. El agente NO lo persiste solo — lo expone
+        # para que el llamador (la API) lo registre; así los tests y la
+        # evaluación pueden usar el agente sin escribir en la base.
+        self.ultimo_registro: dict = {}
 
     # --- API pública ---
 
@@ -105,7 +113,9 @@ class AgenteReservaciones:
         hace falta), y devuelve la redacción final. La sesión MCP se cierra
         al terminar (ver ClienteMCP para el porqué).
         """
+        inicio = time.monotonic()
         self.ultimo_uso = {"tokens_entrada": 0, "tokens_salida": 0, "tokens_total": 0}
+        tools_llamadas: list[dict] = []
 
         self.historial.append(
             types.Content(role="user", parts=[types.Part(text=pregunta_usuario)])
@@ -125,41 +135,56 @@ class AgenteReservaciones:
         # Sin tools: el modelo respondió directo (saludo, repregunta, etc.).
         # No se abre MCP.
         if not respuesta.function_calls:
-            return self._cerrar_turno(respuesta)
+            texto = self._cerrar_turno(respuesta)
+        else:
+            # Con tools: se abre MCP y se corre el ciclo llamar → ejecutar →
+            # devolver resultado → repetir, hasta que el modelo redacte sin
+            # pedir más tools (o hasta el tope de iteraciones).
+            async with ClienteMCP() as cli:
+                iteraciones = 0
+                while respuesta.function_calls and iteraciones < self.MAX_ITERACIONES_TOOLS:
+                    iteraciones += 1
 
-        # Con tools: se abre MCP y se corre el ciclo llamar → ejecutar →
-        # devolver resultado → repetir, hasta que el modelo redacte sin
-        # pedir más tools (o hasta el tope de iteraciones).
-        async with ClienteMCP() as cli:
-            iteraciones = 0
-            while respuesta.function_calls and iteraciones < self.MAX_ITERACIONES_TOOLS:
-                iteraciones += 1
+                    # Guardar el turno del modelo (los function_call) en el historial.
+                    contenido_modelo = self._contenido(respuesta)
+                    if contenido_modelo is not None:
+                        self.historial.append(contenido_modelo)
 
-                # Guardar el turno del modelo (los function_call) en el historial.
-                contenido_modelo = self._contenido(respuesta)
-                if contenido_modelo is not None:
-                    self.historial.append(contenido_modelo)
-
-                # Ejecutar cada tool pedida y juntar sus resultados. Gemini
-                # puede pedir varias tools de una; se responden todas juntas.
-                partes_resultado = []
-                for fc in respuesta.function_calls:
-                    resultado = await self._ejecutar_tool(cli, fc)
-                    partes_resultado.append(
-                        types.Part.from_function_response(
-                            name=fc.name, response=resultado
+                    # Ejecutar cada tool pedida y juntar sus resultados. Gemini
+                    # puede pedir varias tools de una; se responden todas juntas.
+                    partes_resultado = []
+                    for fc in respuesta.function_calls:
+                        entrada = dict(fc.args) if fc.args else {}
+                        salida = await self._ejecutar_tool(cli, fc)
+                        tools_llamadas.append(
+                            {"nombre": fc.name, "input": entrada, "output": salida}
                         )
+                        partes_resultado.append(
+                            types.Part.from_function_response(
+                                name=fc.name, response=salida
+                            )
+                        )
+                    self.historial.append(
+                        types.Content(role="user", parts=partes_resultado)
                     )
-                self.historial.append(
-                    types.Content(role="user", parts=partes_resultado)
-                )
 
-                respuesta = self.client.models.generate_content(
-                    model=self.modelo, contents=self.historial, config=config
-                )
-                self._acumular_uso(respuesta)
+                    respuesta = self.client.models.generate_content(
+                        model=self.modelo, contents=self.historial, config=config
+                    )
+                    self._acumular_uso(respuesta)
 
-        return self._cerrar_turno(respuesta)
+            texto = self._cerrar_turno(respuesta)
+
+        self.ultimo_registro = {
+            "mensaje_usuario": pregunta_usuario,
+            "tools": tools_llamadas,
+            "respuesta_agente": texto,
+            "tokens_entrada": self.ultimo_uso["tokens_entrada"],
+            "tokens_salida": self.ultimo_uso["tokens_salida"],
+            "tokens_total": self.ultimo_uso["tokens_total"],
+            "latencia_ms": int((time.monotonic() - inicio) * 1000),
+        }
+        return texto
 
     def cerrar(self) -> None:
         """

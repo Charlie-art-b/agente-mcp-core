@@ -247,5 +247,24 @@ async def test_corta_si_el_modelo_pide_tools_sin_parar(agente):
     assert len(a.client.llamadas) <= AgenteReservaciones.MAX_ITERACIONES_TOOLS + 1
 
 
+@pytest.mark.asyncio
+async def test_arma_el_registro_para_el_logging(agente):
+    """Cada turno deja en ultimo_registro lo necesario para el logging (Fase 6)."""
+    a = agente.usar_respuestas(
+        _RespuestaGemini(function_calls=[fc("consultar_disponibilidad", fecha="2026-07-25")]),
+        _RespuestaGemini(text="Tenemos las 09:00 y 10:00."),
+    )
+
+    await a.responder("¿Tenés campo mañana?")
+
+    reg = a.ultimo_registro
+    assert reg["mensaje_usuario"] == "¿Tenés campo mañana?"
+    assert reg["respuesta_agente"] == "Tenemos las 09:00 y 10:00."
+    assert reg["tools"][0]["nombre"] == "consultar_disponibilidad"
+    assert reg["tools"][0]["input"] == {"fecha": "2026-07-25"}
+    assert reg["tools"][0]["output"]["total"] == 2
+    assert reg["latencia_ms"] >= 0
+
+
 def test_cerrar_no_falla(agente):
     agente.cerrar()  # no debe lanzar

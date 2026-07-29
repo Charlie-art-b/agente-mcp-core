@@ -26,17 +26,15 @@ from app.db.models import Base, Cliente, Reservacion, TicketEscalado
 from app.db.seed import sembrar_datos_ejemplo
 from app.db.session import obtener_engine_defecto, obtener_sesion
 from app.eval.casos_e2e import CASOS
+from app.precios import (
+    PRECIO_ENTRADA_POR_1M,
+    PRECIO_SALIDA_POR_1M,
+    costo_de_tokens,
+)
 
 # Pausa entre turnos para no pasar el límite de ~5 llamadas/min de la capa
 # gratuita (un turno con tool son 2 llamadas). En capa paga, poné 0.
 PAUSA_ENTRE_TURNOS_SEGUNDOS = 22.0
-
-# Precio estimado del modelo, en dólares por millón de tokens. VERIFICÁ los
-# valores actuales en https://ai.google.dev/pricing — acá van de referencia
-# para que el reporte muestre un costo aproximado. En la capa gratuita el
-# costo real es 0; este número es "cuánto costaría en capa paga".
-PRECIO_ENTRADA_POR_1M = 0.10
-PRECIO_SALIDA_POR_1M = 0.40
 
 
 def reiniciar_base() -> None:
@@ -113,10 +111,7 @@ def evaluar_conversacion(agente, caso: dict, pausa: float = 0.0) -> dict:
     marcadores_ok = _marcadores_presentes(respuesta_final, caso["marcadores"])
     db_ok = _efecto_db_ok(caso["efecto_db"])
 
-    costo = (
-        tokens["entrada"] / 1_000_000 * PRECIO_ENTRADA_POR_1M
-        + tokens["salida"] / 1_000_000 * PRECIO_SALIDA_POR_1M
-    )
+    costo = costo_de_tokens(tokens["entrada"], tokens["salida"])
 
     return {
         "nombre": caso["nombre"],
