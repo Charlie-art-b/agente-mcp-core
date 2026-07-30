@@ -318,7 +318,10 @@ class AgenteReservaciones:
                     "Agenda una reservación en un horario disponible. Úsala cuando el "
                     "usuario confirme que quiere reservar. Necesitás el horario_id, que "
                     "da consultar_disponibilidad: nunca lo inventes ni asumas que un "
-                    "horario sigue libre, esta tool lo verifica y avisa si ya se ocupó."
+                    "horario sigue libre, esta tool lo verifica y avisa si ya se ocupó. "
+                    "Para reservar hace falta el nombre del cliente Y al menos un dato de "
+                    "contacto —un teléfono O un correo, el que el cliente prefiera dar—. "
+                    "Si te falta el nombre o el contacto, pedíselos antes de llamar la tool."
                 ),
                 parameters={
                     "type": "object",
@@ -401,6 +404,9 @@ cuando corresponda en vez de inventar información.
 Reglas de negocio:
 - Antes de crear una reservación SIEMPRE tenés que tener un horario_id real que haya
   devuelto consultar_disponibilidad. Nunca lo inventes.
+- Para reservar necesitás el nombre del cliente Y al menos un dato de contacto: un
+  teléfono o un correo, el que el cliente prefiera. Si te falta alguno, pedíselo antes
+  de reservar (no hace falta que dé los dos, con uno alcanza).
 - Si el usuario expresa un reclamo, una queja, un problema con un cobro, insatisfacción,
   o pide hablar con una persona, tu objetivo es registrar el caso con escalar_caso —
   no lo trates como una consulta ni intentes resolverlo vos. Pero registralo UNA SOLA

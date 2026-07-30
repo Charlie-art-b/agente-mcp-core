@@ -133,10 +133,38 @@ def test_crea_el_cliente_si_es_la_primera_vez(sesion):
     assert creado.nombre == "Luis Gómez"
 
 
-def test_se_puede_reservar_sin_telefono(sesion):
-    resultado = crear_reservacion(1, "Cliente sin teléfono", sesion=sesion)
+def test_se_puede_reservar_solo_con_correo(sesion):
+    """El contacto puede ser el correo: no hace falta teléfono."""
+    resultado = crear_reservacion(
+        1, "Ana", email="ana@example.com", sesion=sesion
+    )
 
     assert resultado["creada"] is True
+    assert resultado["cliente"]["nombre"] == "Ana"
+
+
+def test_no_se_puede_reservar_sin_ningun_contacto(sesion):
+    """
+    Una reserva sin teléfono ni correo no sirve: no hay forma de confirmarla.
+    La tool la rechaza (y no ocupa el horario) para que el agente pida el dato.
+    """
+    resultado = crear_reservacion(1, "Cliente sin contacto", sesion=sesion)
+
+    assert resultado["creada"] is False
+    assert "contacto" in resultado["error"]
+    # No debió tocar la base: el horario sigue libre y no hay reservación.
+    assert sesion.get(HorarioDisponible, 1).disponible is True
+    assert sesion.query(Reservacion).count() == 0
+
+
+def test_contacto_en_blanco_no_cuenta_como_contacto(sesion):
+    """Un teléfono y correo vacíos equivalen a no dar contacto."""
+    resultado = crear_reservacion(
+        1, "Ana", telefono="   ", email="", sesion=sesion
+    )
+
+    assert resultado["creada"] is False
+    assert "contacto" in resultado["error"]
 
 
 # --- Errores y concurrencia ---

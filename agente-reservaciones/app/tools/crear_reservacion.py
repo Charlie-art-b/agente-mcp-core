@@ -65,13 +65,27 @@ def crear_reservacion(
         nombre_cliente: nombre de la persona que reserva.
         telefono: teléfono del cliente. Si ya reservó antes con ese mismo
             número, se reutiliza su ficha en vez de duplicarla.
-        email: correo del cliente (opcional).
+        email: correo del cliente. Podés dar teléfono, correo, o los dos.
 
     Returns:
         dict con los datos de la reservación creada. Si el horario ya no
         está disponible, devuelve un error junto con los otros horarios
         libres de ese mismo servicio y día, para poder ofrecer alternativas.
     """
+    # Regla de negocio: una reserva necesita al menos UN dato de contacto
+    # (teléfono o correo) para poder confirmarla y avisar al cliente. El
+    # cliente elige cuál dar. Se valida antes de tocar la base para no
+    # bloquear un horario por un pedido incompleto.
+    tiene_telefono = bool(telefono and telefono.strip())
+    tiene_email = bool(email and email.strip())
+    if not tiene_telefono and not tiene_email:
+        return {
+            "creada": False,
+            "error": "Para confirmar la reserva necesito al menos un dato de "
+            "contacto: un teléfono o un correo. Pedile al cliente el que "
+            "prefiera dar.",
+        }
+
     sesion_propia = sesion is None
     if sesion_propia:
         sesion = obtener_sesion()
