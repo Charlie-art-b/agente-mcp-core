@@ -113,13 +113,14 @@ def agente(monkeypatch):
 # --- Declaración de tools ---
 
 
-def test_declara_las_cuatro_tools_para_gemini(agente):
-    # self._tools es [Tool(function_declarations=[...4...])]
+def test_declara_todas_las_tools_para_gemini(agente):
+    # self._tools es [Tool(function_declarations=[...])]
     nombres = {d.name for d in agente._tools[0].function_declarations}
     assert nombres == {
         "buscar_conocimiento",
         "consultar_disponibilidad",
         "crear_reservacion",
+        "cancelar_reservacion",
         "escalar_caso",
     }
 

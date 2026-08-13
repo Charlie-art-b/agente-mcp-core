@@ -47,6 +47,7 @@ Usuario (web hoy / WhatsApp mañana)
    Servidor MCP  ──►  buscar_conocimiento   (RAG sobre Chroma)
         │        ──►  consultar_disponibilidad (Postgres)
         │        ──►  crear_reservacion        (Postgres)
+        │        ──►  cancelar_reservacion     (Postgres)
         │        ──►  escalar_caso             (marca ticket)
         │
    Logging / Evaluación  ──►  cada llamada queda registrada y medida
@@ -79,7 +80,7 @@ docker compose up -d postgres  # levanta PostgreSQL 16
 python -m app.db.seed          # datos de ejemplo
 python -m app.rag.ingest       # ingesta la base de conocimiento
 
-pytest -v                      # 61 tests
+pytest -v                      # 120 tests
 ```
 
 Creá un `.env` en la raíz del proyecto con al menos esto:
@@ -113,7 +114,7 @@ winget install --id Microsoft.VCRedist.2015+.x64 -e
 
 ## Servidor MCP
 
-Expone las 4 tools del negocio por Model Context Protocol, para que
+Expone las 5 tools del negocio por Model Context Protocol, para que
 cualquier cliente compatible (Claude Desktop, Claude Code, un cliente
 propio con el SDK) las descubra y ejecute:
 
@@ -122,7 +123,15 @@ propio con el SDK) las descubra y ejecute:
 | `buscar_conocimiento` | Responde preguntas de información | RAG / Chroma |
 | `consultar_disponibilidad` | Horarios libres en una fecha | Postgres |
 | `crear_reservacion` | Agenda un horario | Postgres |
+| `cancelar_reservacion` | Cancela una cita y libera su horario | Postgres |
 | `escalar_caso` | Abre un ticket para un humano | Postgres |
+
+`cancelar_reservacion` trabaja en dos pasos, igual que reservar: con el
+teléfono devuelve las reservas activas del cliente **sin cancelar nada**,
+y recién con un `reservacion_id` concreto ejecuta la cancelación. Es para
+no cancelar la cita equivocada cuando alguien tiene varias. No bloquea una
+cancelación fuera de plazo —aplicar o perdonar el cargo lo decide el
+negocio, no el agente— pero avisa cuando cae dentro de las 24 horas.
 
 ```bash
 python app/mcp_server/server.py     # transporte stdio
@@ -222,7 +231,8 @@ Ejemplos de consultas:
 "¿Qué servicios ofrecen?"                    → buscar_conocimiento
 "¿Hay disponibilidad para corte mañana?"     → consultar_disponibilidad
 "Quiero reservar para mañana a las 14:00"    → consultar_disponibilidad + crear_reservacion
-"Necesito cancelar mi cita"                   → escalar_caso (porque no hay tool de cancelación)
+"Necesito cancelar mi cita"                   → cancelar_reservacion (busca por teléfono y confirma cuál)
+"Quiero que me devuelvan la plata"            → escalar_caso (no hay tool de reintegros)
 ```
 
 **3. API HTTP (futuro: client web / WhatsApp)**

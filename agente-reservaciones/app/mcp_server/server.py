@@ -32,6 +32,9 @@ if str(_RAIZ) not in sys.path:
     sys.path.insert(0, str(_RAIZ))
 
 from app.tools.buscar_conocimiento import buscar_conocimiento as _buscar_conocimiento
+from app.tools.cancelar_reservacion import (
+    cancelar_reservacion as _cancelar_reservacion,
+)
 from app.tools.consultar_disponibilidad import (
     consultar_disponibilidad as _consultar_disponibilidad,
 )
@@ -119,6 +122,42 @@ def crear_reservacion(
         nombre_cliente=nombre_cliente,
         telefono=telefono,
         email=email,
+    )
+
+
+@mcp.tool()
+def cancelar_reservacion(
+    reservacion_id: int | None = None,
+    telefono: str | None = None,
+) -> dict:
+    """
+    Cancela una reservación existente y libera su horario.
+
+    Úsala cuando el usuario quiera cancelar, anular o dar de baja una cita
+    que ya tenía agendada. Funciona en dos pasos: si el cliente no sabe su
+    número de reservación, llamala con su `telefono` y te devuelve sus
+    reservas activas SIN cancelar nada, para que el cliente elija cuál;
+    después llamala de nuevo con el `reservacion_id` elegido y ahí sí se
+    cancela. Nunca canceles sin haber confirmado cuál es la reserva.
+
+    No la uses para reagendar a otro horario (eso hoy no se puede hacer
+    solo: cancelá y creá una reserva nueva), ni para reclamos o pedidos de
+    excepción a la política de cancelación (eso es `escalar_caso`).
+
+    Args:
+        reservacion_id: número de la reservación a cancelar, tal como lo
+            devolvió `crear_reservacion` o la búsqueda por teléfono.
+        telefono: teléfono con el que se hizo la reserva. Sirve para buscar
+            las reservas activas cuando el cliente no tiene el número.
+
+    Returns:
+        Si se canceló, los datos de la cita y si la cancelación cae dentro
+        del plazo con cargo. Si solo se dio el teléfono, la lista de
+        reservas activas para elegir cuál cancelar.
+    """
+    return _cancelar_reservacion(
+        reservacion_id=reservacion_id,
+        telefono=telefono,
     )
 
 
