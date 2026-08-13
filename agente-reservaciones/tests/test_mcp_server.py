@@ -74,7 +74,12 @@ def base_de_prueba(monkeypatch):
 
     # Cada tool llama a obtener_sesion() desde su propio módulo, así que se
     # reemplaza en cada uno y no en app.db.session.
-    for modulo in ("consultar_disponibilidad", "crear_reservacion", "escalar_caso"):
+    for modulo in (
+        "consultar_disponibilidad",
+        "crear_reservacion",
+        "cancelar_reservacion",
+        "escalar_caso",
+    ):
         monkeypatch.setattr(f"app.tools.{modulo}.obtener_sesion", lambda: fabrica())
 
     return ruta
@@ -93,6 +98,7 @@ async def test_el_servidor_expone_las_tools_esperadas():
         "buscar_conocimiento",
         "consultar_disponibilidad",
         "crear_reservacion",
+        "cancelar_reservacion",
         "escalar_caso",
     }
 
@@ -247,6 +253,96 @@ async def test_reservar_dos_veces_el_mismo_horario_rebota_por_mcp(base_de_prueba
 
     assert segunda["creada"] is False
     assert "ya fue reservado" in segunda["error"]
+
+
+@pytest.mark.asyncio
+async def test_reservar_y_cancelar_por_mcp_devuelve_el_horario_al_pool(base_de_prueba):
+    """
+    El ciclo completo a través del protocolo: se reserva el único horario,
+    deja de ofrecerse, se cancela, y vuelve a estar disponible.
+    """
+    async with cliente_mcp() as cliente:
+        reserva = json.loads(
+            (
+                await cliente.call_tool(
+                    "crear_reservacion",
+                    {
+                        "horario_id": 1,
+                        "nombre_cliente": "Ana Pérez",
+                        "telefono": "8888-0001",
+                    },
+                )
+            ).content[0].text
+        )
+
+        ocupado = json.loads(
+            (
+                await cliente.call_tool(
+                    "consultar_disponibilidad", {"fecha": FECHA_STR}
+                )
+            ).content[0].text
+        )
+
+        cancelacion = json.loads(
+            (
+                await cliente.call_tool(
+                    "cancelar_reservacion",
+                    {"reservacion_id": reserva["reservacion_id"]},
+                )
+            ).content[0].text
+        )
+
+        liberado = json.loads(
+            (
+                await cliente.call_tool(
+                    "consultar_disponibilidad", {"fecha": FECHA_STR}
+                )
+            ).content[0].text
+        )
+
+    assert cancelacion["cancelada"] is True
+    assert cancelacion["hora_inicio"] == "09:00"
+    assert ocupado["total"] == 0
+    assert liberado["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelar_solo_con_telefono_no_cancela_todavia_por_mcp(base_de_prueba):
+    """
+    El paso previo tiene que llegar entero al otro lado: la lista de
+    reservas activas con su id, y nada cancelado.
+    """
+    async with cliente_mcp() as cliente:
+        await cliente.call_tool(
+            "crear_reservacion",
+            {
+                "horario_id": 1,
+                "nombre_cliente": "Ana Pérez",
+                "telefono": "8888-0001",
+            },
+        )
+        resultado = json.loads(
+            (
+                await cliente.call_tool(
+                    "cancelar_reservacion", {"telefono": "8888-0001"}
+                )
+            ).content[0].text
+        )
+        despues = json.loads(
+            (
+                await cliente.call_tool(
+                    "consultar_disponibilidad", {"fecha": FECHA_STR}
+                )
+            ).content[0].text
+        )
+
+    assert resultado["cancelada"] is False
+    assert resultado["requiere_confirmacion"] is True
+    assert isinstance(
+        resultado["reservaciones_activas"][0]["reservacion_id"], int
+    )
+    # Nada se canceló: el horario sigue ocupado.
+    assert despues["total"] == 0
 
 
 @pytest.mark.asyncio

@@ -348,6 +348,40 @@ class AgenteReservaciones:
                 },
             ),
             types.FunctionDeclaration(
+                name="cancelar_reservacion",
+                description=(
+                    "Cancela una reservación existente y libera su horario. Úsala "
+                    "cuando el usuario quiera cancelar, anular o dar de baja una cita "
+                    "que ya tenía agendada. Funciona en dos pasos: si el cliente no "
+                    "sabe su número de reservación, llamala con su telefono y devuelve "
+                    "sus reservas activas SIN cancelar nada, para que el cliente elija "
+                    "cuál; después llamala de nuevo con el reservacion_id elegido y ahí "
+                    "sí se cancela. Nunca canceles sin haber confirmado cuál es la "
+                    "reserva. No la uses para reclamos ni para pedir una excepción a la "
+                    "política de cancelación (eso es escalar_caso)."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "reservacion_id": {
+                            "type": "integer",
+                            "description": "Número de la reservación a cancelar, tal como "
+                            "lo devolvió crear_reservacion o la búsqueda por teléfono.",
+                        },
+                        "telefono": {
+                            "type": "string",
+                            "description": "Teléfono con el que se hizo la reserva. Sirve "
+                            "para buscar las reservas activas cuando el cliente no tiene "
+                            "el número.",
+                        },
+                    },
+                    # Ninguno es obligatorio por separado, pero hace falta al
+                    # menos uno: la tool devuelve un error claro si no llega
+                    # ninguno, y el modelo pide el dato que falte.
+                    "required": [],
+                },
+            ),
+            types.FunctionDeclaration(
                 name="escalar_caso",
                 description=(
                     "Registra un caso para que una persona del negocio lo atienda. LLAMÁ "
@@ -407,6 +441,10 @@ Reglas de negocio:
 - Para reservar necesitás el nombre del cliente Y al menos un dato de contacto: un
   teléfono o un correo, el que el cliente prefiera. Si te falta alguno, pedíselo antes
   de reservar (no hace falta que dé los dos, con uno alcanza).
+- Para cancelar una cita: si el cliente no sabe su número de reservación, pedile el
+  teléfono con el que reservó y usá cancelar_reservacion para ver sus reservas activas.
+  Mostráselas, preguntale cuál quiere cancelar, y recién ahí cancelá esa. Nunca canceles
+  una reserva sin haber confirmado con el cliente cuál es.
 - Si el usuario expresa un reclamo, una queja, un problema con un cobro, insatisfacción,
   o pide hablar con una persona, tu objetivo es registrar el caso con escalar_caso —
   no lo trates como una consulta ni intentes resolverlo vos. Pero registralo UNA SOLA
